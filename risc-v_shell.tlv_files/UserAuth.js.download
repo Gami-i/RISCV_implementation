@@ -1,0 +1,112 @@
+(function() {
+  var $, Logging, Promise, UserAuth, ref;
+
+  ref = [], Logging = ref[0], Promise = ref[1], $ = ref[2];
+
+
+  /*
+  A module that handles user login status and login/logout requests
+  @extend ModuleConfigObject
+   */
+
+  UserAuth = (function() {
+    function UserAuth() {}
+
+    UserAuth.prototype.err = null;
+
+    UserAuth.prototype.id = null;
+
+
+    /*
+    initializes the basic user authentication flow.
+    @param {ErrorDisplay} err A location to display errors
+    @return {Promise<UserAuth>}
+     */
+
+    UserAuth.prototype.init = function(err) {
+      this.err = err;
+      return this.isLoggedIn().then((function(_this) {
+        return function(isLoggedIn) {
+          console.log("Logged in: " + isLoggedIn);
+          if (isLoggedIn) {
+            return _this;
+          }
+          return new Promise(function(resolve, reject) {
+            return _this.newAuth(function() {
+              return resolve(_this);
+            });
+          });
+        };
+      })(this));
+    };
+
+
+    /*
+    Determines if the user is logged in with the server for this session.
+    @param {Function} cb called with `true` if the user is logged in
+    @return {Boolean} true if the server has authentication for this session
+     */
+
+    UserAuth.prototype.isLoggedIn = function(retry) {
+      if (retry == null) {
+        retry = 0;
+      }
+      return Promise.resolve($.get("/auth/hasAuth/")).then(function(data) {
+        return data === "yes";
+      })["catch"]((function(_this) {
+        return function() {
+          return Logging.WARN("Unable to fetch authentication status from the server").dev("Error fetching /auth/hasAuth/").loc("UserAuth", "hasStoredAuth").attempts(retry).retry(function() {
+            return _this.isLoggedIn(retry + 1);
+          }).send().display(_this.err).retryPromise();
+        };
+      })(this));
+    };
+
+
+    /*
+    Requests a new anonymous authentication ID from the server.
+    @param {Function} cb called after the user is successfully registered as anonymous
+     */
+
+    UserAuth.prototype.newAuth = function(cb, retry) {
+      if (retry == null) {
+        retry = 0;
+      }
+      return $.getJSON("/auth/anon/").done((function(_this) {
+        return function(data) {
+          if (!data) {
+            return Logging.WARN("Unable to request authentication from the server: error given.").dev("No response from /auth/anon/").loc("UserAuth", "newAuth").attempts(retry).retry(function() {
+              return _this.newAuth(cb, retry + 1);
+            }).send().display(_this.err);
+          }
+          if (!data.id) {
+            return Logging.WARN("Unable to request authentication from the server: missing data.").dev("No ID included from /auth/anon/").loc("UserAuth", "newAuth").attempts(retry).retry(function() {
+              return _this.newAuth(cb, retry + 1);
+            }).send().display(_this.err);
+          }
+          Logging.DETAIL("got /auth/anon/").uid(data.id);
+          _this.id = data.id;
+          return cb();
+        };
+      })(this)).fail((function(_this) {
+        return function() {
+          return Logging.WARN("Unable to request authentication from the server: connection failed.").dev("Failed to connect to /auth/anon/").loc("UserAuth", "newAuth").attempts(retry).retry(function() {
+            return _this.newAuth(cb, retry + 1);
+          }).send().display(_this.err);
+        };
+      })(this));
+    };
+
+    return UserAuth;
+
+  })();
+
+  define("UserAuth", function(require, exports, module) {
+    $ = require("jquery");
+    Logging = require("Logging");
+    Promise = require("bluebird");
+    $.extend(UserAuth.prototype, module.config());
+    return UserAuth;
+  });
+
+}).call(this);

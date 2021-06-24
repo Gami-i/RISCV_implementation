@@ -1,0 +1,527 @@
+(function() {
+  var $, Project, ProjectManager, Promise, WaveData, messages, ref, regexes,
+    bind = function(fn, me){ return function(){ return fn.apply(me, arguments); }; },
+    extend = function(child, parent) { for (var key in parent) { if (hasProp.call(parent, key)) child[key] = parent[key]; } function ctor() { this.constructor = child; } ctor.prototype = parent.prototype; child.prototype = new ctor(); child.__super__ = parent.prototype; return child; },
+    hasProp = {}.hasOwnProperty;
+
+  ref = [], $ = ref[0], Promise = ref[1], WaveData = ref[2];
+
+  regexes = {
+    sandboxUserProject: /^\/sandbox(\/nda|\/alpha)?\/([a-zA-Z0-9][a-zA-Z0-9\.-_]*)\/([a-zA-Z0-9][a-zA-Z0-9\.-_]*)/
+  };
+
+  messages = {
+    confirmDelete: "Are you sure you want to delete this project?  This is final, and can't be undone.\n\nClick 'OK' to permanantly delete your project.",
+    confirmUnsavedPending: "Autosave pending. Click 'cancel' or 'stay on this page' to ensure your changes are saved.",
+    confirmUnsaved: "Latest changes are unsaved.  Click 'cancel' or 'stay on this page' to ensure your changes are saved."
+  };
+
+
+  /*
+  A module that handles projects.
+  This class is mainly responsible for interfacing with the server.
+  Project extends this with client-side capabilities for a project (currently one per browser session).
+  
+  @extend ModuleConfigObject
+   */
+
+  ProjectManager = (function() {
+    ProjectManager.prototype.access_level = null;
+
+    ProjectManager.prototype.user = null;
+
+    ProjectManager.prototype.path = null;
+
+    ProjectManager.prototype.vcd = false;
+
+    ProjectManager.AUTOSAVE_MS = 4000;
+
+    ProjectManager.prototype.saveChangeGeneration = -1;
+
+    ProjectManager.prototype._saveState = null;
+
+    ProjectManager.prototype._forceUnload = false;
+
+    function ProjectManager() {
+      this.forceSave = bind(this.forceSave, this);
+      this.canEdit = bind(this.canEdit, this);
+      this.saveNeeded = bind(this.saveNeeded, this);
+      this.save = bind(this.save, this);
+      this.postProject = bind(this.postProject, this);
+      this.initSave = bind(this.initSave, this);
+      $(window).on("popstate", (function(_this) {
+        return function(event) {
+          if ((event.originalEvent.state != null) && typeof event.originalEvent.state.path !== "undefined" && event.originalEvent.state.path !== _this.path) {
+            _this.forceSave();
+            _this._forceUnload = true;
+            return setTimeout((function() {
+              return window.location.reload();
+            }), 0);
+          }
+        };
+      })(this));
+    }
+
+
+    /*
+    @return the URL for the project
+     */
+
+    ProjectManager.prototype.url = function() {
+      return "/project/" + this.user + "/" + this.path;
+    };
+
+
+    /*
+    @return {Promise<ProjectManager>}
+     */
+
+    ProjectManager.prototype.init = function() {
+      var matches, url;
+      if (matches = window.location.pathname.match(regexes.sandboxUserProject)) {
+        url = matches[0], this.access_level = matches[1], this.user = matches[2], this.path = matches[3];
+        this._firstInit = true;
+        this.attach();
+      }
+      $("body").on("click", "[href='#new-project']", (function(_this) {
+        return function(e) {
+          e.preventDefault();
+          _this.newProject();
+          _this.initSave();
+          return _this.attach();
+        };
+      })(this));
+      $("body").on("click", "[href='#clone-project']", (function(_this) {
+        return function(e) {
+          e.preventDefault();
+          _this.cloneProject();
+          return _this.attach();
+        };
+      })(this));
+      $("body").on("click", "[href='#delete-project']", (function(_this) {
+        return function(e) {
+          e.preventDefault();
+          if (confirm(messages.confirmDelete)) {
+            _this.deleteProject();
+            return _this.detach();
+          }
+        };
+      })(this));
+      window.onbeforeunload = (function(_this) {
+        return function() {
+          if (_this._editor && !_this._editor.editor.isClean(_this.saveChangeGeneration) && !_this._forceUnload) {
+            messages.confirmUnsaved;
+          }
+          return _this.detach();
+        };
+      })(this);
+      return Promise.resolve(this);
+    };
+
+
+    /*
+    Attaches the editor to the project.
+    Refer to: Project -> editorAttached property.
+     */
+
+    ProjectManager.prototype.attach = function() {
+      return $.post("/project/" + this.user + "/" + this.path + "/attach", "");
+    };
+
+
+    /*
+    Detaches the editor from the project.
+    Refer to: Project -> editorAttached property.
+     */
+
+    ProjectManager.prototype.detach = function() {
+      return navigator.sendBeacon("/project/" + this.user + "/" + this.path + "/detach", "");
+    };
+
+
+    /*
+    Listen for saves, if components are available and not doing so already.
+     */
+
+    ProjectManager.prototype.initSave = function() {
+      if (!this._editor || this._initSave_listening) {
+        return;
+      }
+      this._initSave_listening = true;
+      this._saveState = null;
+      return this._editor.editor.on("changes", (function(_this) {
+        return function() {
+          return _this.saveNeeded();
+        };
+      })(this));
+    };
+
+
+    /*
+    Post a project to the server, either as a save, new project, or clone.
+    @param {String} url the URL string of the post
+    @param {String} action the name of the action (starting w/ upper-case)
+    @param {String} oldPath the value of path prior to the action resulting in this post
+    @return {Promise<res, postData} a promise returning {res, postData} or throwing an {Error}.
+     */
+
+    ProjectManager.prototype.postProject = function(url, action, oldPath) {
+      var changeGeneration, fileObj, postDate;
+      this._saveState = "posted";
+      changeGeneration = this._editor.editor.changeGeneration(false);
+      postDate = new Date();
+      fileObj = {
+        source: this._editor.editor.getValue()
+      };
+      return Promise.join($.post(url, fileObj, "json"), Promise.resolve({
+        changeGeneration: changeGeneration,
+        postDate: postDate,
+        path: this.path,
+        oldPath: oldPath
+      })).then((function(_this) {
+        return function(arg) {
+          var postData, res;
+          res = arg[0], postData = arg[1];
+          if (res.err) {
+            throw new Error(res.err);
+          }
+          if (_this.path === postData.path) {
+            _this.saveChangeGeneration = postData.changeGeneration;
+            _this._saveState = null;
+            if (!_this._editor.editor.isClean(postData.changeGeneration)) {
+              _this.saveNeeded();
+            }
+            _this.emit("saved", postData.postDate);
+            return {
+              res: res,
+              postData: postData
+            };
+          }
+        };
+      })(this))["catch"]((function(_this) {
+        return function(err) {
+          _this._saveState = false;
+          _this.saveChangeGeneration = -1;
+          if (err.status && err.status === 422) {
+            _this.emit("app error");
+          } else {
+            _this.emit("save error");
+          }
+          return console.log(action + " failed.");
+        };
+      })(this));
+    };
+
+
+    /*
+    Save the project.
+    @param {String} path the @path that triggered the save.
+    @return {Promise}
+     */
+
+    ProjectManager.prototype.save = function(path) {
+      if (this.path !== path) {
+        return;
+      }
+      if (this._saveState !== "pending") {
+        console.log("Bug: Saving when no save is pending");
+      }
+      if (this._editor.editor.isClean(this.saveChangeGeneration)) {
+        this._saveState = null;
+        return;
+      }
+      this.emit("saving");
+      return this.postProject((this.url()) + "/save/", "Save", this.path);
+    };
+
+    ProjectManager.prototype.saveNeeded = function() {
+      if (!this.user || !this.path) {
+        return this._saveState = "modified";
+      } else {
+        return this.canEdit().then((function(_this) {
+          return function(canEdit) {
+            var path, thisSave;
+            if (!canEdit) {
+              _this._saveState = "modified";
+              return;
+            }
+            if (!_this._saveState || _this._saveState === "modified") {
+              _this._saveState = "pending";
+              thisSave = _this.save;
+              path = _this.path;
+              return setTimeout((function() {
+                return thisSave(path);
+              }), _this.constructor.AUTOSAVE_MS * (_this._saveState === false ? 3 : 1));
+            }
+          };
+        })(this));
+      }
+    };
+
+
+    /*
+    Save a reference to an editor.
+    @param {Editor} _editor
+    @return {Promise<ProjectManager>}
+     */
+
+    ProjectManager.prototype.editor = function(_editor) {
+      this._editor = _editor;
+      if (this._firstInit) {
+        this._firstInit = false;
+        this.getProject();
+      }
+      this._initSave_listening = false;
+      this.initSave();
+      return this;
+    };
+
+
+    /*
+    Determines if the current user can edit the file.
+    @param {Boolean} force require a new query to the server
+    @return {Promise<Boolean>} `true` if the user can edit.
+     */
+
+    ProjectManager.prototype.canEdit = function(force) {
+      if (force == null) {
+        force = false;
+      }
+      if ((this._canEdit != null) && !force) {
+        return Promise.resolve(this._canEdit);
+      }
+      return Promise.resolve($.getJSON((this.url()) + "/canEdit/")).then((function(_this) {
+        return function(arg) {
+          var canEdit, id;
+          id = arg.id, canEdit = arg.canEdit;
+          return _this._canEdit = canEdit;
+        };
+      })(this))["catch"]((function(_this) {
+        return function(err) {
+          var error;
+          if (err.status && err.status === 400) {
+            _this._canEdit = false;
+            try {
+              console.log(JSON.parse(err.responseText).err);
+            } catch (error1) {
+              error = error1;
+              console.log("Unable to save.");
+            }
+            return Promise.resolve(false);
+          }
+          throw err;
+        };
+      })(this));
+    };
+
+
+    /*
+    Get the contents and metadata for the current URL and set the value of the editor.
+     */
+
+    ProjectManager.prototype.getProject = function() {
+      this.projectAnalytics("open");
+      return Promise.resolve($.get((this.url()) + "/contents/", "json")).then((function(_this) {
+        return function(arg) {
+          var id, lastEdit, name, value, vcd;
+          id = arg.id, name = arg.name, value = arg.value, lastEdit = arg.lastEdit, vcd = arg.vcd;
+          if (_this._canEdit === true) {
+            _this.emit("saved", new Date());
+          }
+          if (name !== null) {
+            document.title = name + " - " + document.title;
+          }
+          if (vcd != null) {
+            _this.vcd = true;
+            _this.emit("vcd", new WaveData(vcd));
+          }
+          _this._editor.setValue(value);
+          _this._editor.compile(true);
+          _this._editor.editor.getDoc().clearHistory();
+          return _this.saveChangeGeneration = _this._editor.editor.changeGeneration(true);
+        };
+      })(this))["catch"](function(err) {
+        return console.log("Error fetching project: " + err);
+      });
+    };
+
+
+    /*
+    Update Google Analytics about a new project.
+    @param {String} action the type of action taken, e.g. `"create"`, `"clone"`
+     */
+
+    ProjectManager.prototype.projectAnalytics = function(action) {
+      if (typeof window.ga !== "function") {
+        return;
+      }
+      return window.ga("send", {
+        hitType: "event",
+        eventCategory: "Projects",
+        eventAction: action,
+        eventLabel: this.user + "/" + this.path
+      });
+    };
+
+
+    /*
+    Updates the window URL to the path provided.  If Google Analytics is loaded, also update analytics.
+    @param {Object} post response, containing {id, url, user, path} for the new page/project
+    @param {String} oldPath the path reflecting the project prior to the change
+    @param {String} gaMessage message for Google Analytics for this event
+     */
+
+    ProjectManager.prototype.changeProject = function(res, oldPath, gaMessage) {
+      var id, path, url;
+      id = res.id, url = res.url, this.user = res.user, path = res.path;
+      window.history.replaceState({
+        path: oldPath
+      }, null, window.location);
+      this.path = path;
+      window.history.pushState({
+        path: this.path
+      }, null, url);
+      this.projectAnalytics(gaMessage);
+      this._saveState = null;
+      this.canEdit(true);
+      if (typeof window.ga === "function") {
+        return window.ga("send", "pageview", location.pathname);
+      }
+    };
+
+
+    /*
+    Safe to call anytime to ensure that a save is or has been posted for the current editor contents.
+     */
+
+    ProjectManager.prototype.forceSave = function() {
+      if ((this._canEdit != null) && this._canEdit && this._editor && this.user && this.path && this._saveState === "pending") {
+        return this.save(this.path);
+      } else {
+
+      }
+    };
+
+
+    /*
+    Generate a new project.
+     */
+
+    ProjectManager.prototype.newProject = function() {
+      var oldPath;
+      this.forceSave();
+      oldPath = this.path;
+      this.path = null;
+      return this.postProject("/project/", "New project", oldPath).then((function(_this) {
+        return function(stuff) {
+          _this.changeProject(stuff.res, stuff.postData.oldPath, "create");
+          return window.alert("Be sure to bookmark this new project URL if you'll want to return to your work.");
+        };
+      })(this))["catch"]((function(err) {}));
+    };
+
+
+    /*
+    Clone the current project.
+     */
+
+    ProjectManager.prototype.cloneProject = function() {
+      var oldPath, url;
+      if (!this.user || !this.path) {
+        return;
+      }
+      this.forceSave();
+      url = this.url();
+      oldPath = this.path;
+      this.path = null;
+      this.projectAnalytics("clone");
+      return this.postProject(url + "/clone/json/", "Clone", oldPath).then((function(_this) {
+        return function(stuff) {
+          _this.changeProject(stuff.res, stuff.postData.oldPath, "create from clone");
+          return window.alert("You are now working in a clone.\n" + "Be sure to bookmark this new URL if you'll want to return to your work.");
+        };
+      })(this))["catch"]((function(err) {}));
+    };
+
+
+    /*
+    Delete the current project.
+     */
+
+    ProjectManager.prototype.deleteProject = function() {
+      if (!this.user || !this.path) {
+        return;
+      }
+      return Promise.resolve($.get((this.url()) + "/delete/", "json")).then((function(_this) {
+        return function(arg) {
+          var id, url;
+          id = arg.id, url = arg.url, _this.user = arg.user, _this.path = arg.path;
+          _this.projectAnalytics("delete");
+          return window.location = "/sandbox" + _this.access_level + "/";
+        };
+      })(this));
+    };
+
+    return ProjectManager;
+
+  })();
+
+
+  /*
+  Represents a project (currently one per Makerchip session).
+  This extends ProjectManager, which provides the interface with the server.
+   */
+
+  Project = (function(superClass) {
+    extend(Project, superClass);
+
+    Project.prototype.ide = null;
+
+    Project.prototype.editorPane = null;
+
+    Project.prototype.navTlvPane = null;
+
+    Project.prototype.graphPane = null;
+
+    Project.prototype.waveformPane = null;
+
+    Project.prototype.vizPane = null;
+
+    Project.prototype.logPane = null;
+
+    function Project() {
+      this.initIDE = bind(this.initIDE, this);
+      Project.__super__.constructor.call(this, "Project");
+    }
+
+
+    /*
+    Associate the IDE.
+    @param {IDE} ide The IDE.
+     */
+
+    Project.prototype.initIDE = function(ide) {
+      this.ide = ide;
+      this.editorPane = this.ide.editor;
+      this.navTlvPane = this.ide.navtlv;
+      this.graphPane = this.ide.graph;
+      this.waveformPane = this.ide.viewer;
+      this.vizPane = this.ide.viz;
+      return this.logPane = this.ide.errorlog;
+    };
+
+    return Project;
+
+  })(ProjectManager);
+
+  define("Project", function(require, exports, module) {
+    var EventEmitter;
+    $ = require("jquery");
+    Promise = require("bluebird");
+    EventEmitter = require("Project/eventemitter");
+    WaveData = require("VCD");
+    Project.prototype = $.extend({}, EventEmitter.prototype, module.config(), Project.prototype);
+    return Project;
+  });
+
+}).call(this);

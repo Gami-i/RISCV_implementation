@@ -1,0 +1,393 @@
+(function() {
+  var $, BladeComponent, FlexSplit, Logging, Promise, TabbedView, Utils, ref,
+    hasProp = {}.hasOwnProperty;
+
+  ref = [], Promise = ref[0], BladeComponent = ref[1], TabbedView = ref[2], $ = ref[3], Utils = ref[4], Logging = ref[5];
+
+
+  /*
+  A module that splits the window either horizontally or vertically into sub-panes.
+  FlexSplit contains three containers (or "sides") for its children: "top", "left", and "center".
+  The top-level FlexSplit may contain only "center".  Otherwise, a horizontal
+  split contains "left" and "center", and a vertical split contains "top" and "center".
+  
+  @extend BladeComponent
+  @extend ModuleConfigObject
+   */
+
+  FlexSplit = (function() {
+    function FlexSplit() {}
+
+    FlexSplit.TabbedView = null;
+
+    FlexSplit.prototype.splitEl = null;
+
+    FlexSplit.prototype.children = null;
+
+    FlexSplit.prototype.path = null;
+
+    FlexSplit.prototype.direction = null;
+
+    FlexSplit.prototype._DIRECTION_MAP = null;
+
+    FlexSplit.prototype._PANE_MAP = null;
+
+    FlexSplit.prototype._ORIENTATION_MAP = null;
+
+    FlexSplit.prototype.init = function(path1, direction1, parent, side) {
+      var dir, opts, pname, ref1;
+      this.path = path1;
+      this.direction = direction1;
+      this.setParent(parent, side);
+      this._DIRECTION_MAP = {
+        north: "top",
+        east: "center",
+        south: "center",
+        west: "left",
+        center: "center"
+      };
+      this._PANE_MAP = {
+        top: "top",
+        right: "center",
+        bottom: "center",
+        left: "left",
+        center: "center"
+      };
+      this._ORIENTATION_MAP = {
+        horizontal: "left",
+        vertical: "top",
+        single: "NONE"
+      };
+      this.children = {};
+      this.splitEl = Utils.$one("#" + this.path);
+      this.splitEl.html("<div data-FlexSplit=\"data-FlexSplit\" id=\"" + this.path + "-split\">\n  <div data-FlexSplit-mergepreview=\"data-FlexSplit-mergepreview\"\n    class=\"mc-split-preview\" id=\"" + this.path + "-mergepreview\"></div>\n  <div data-FlexSplit-child=\"left\" id=\"" + this.path + "-left\"></div>\n  <div data-FlexSplit-child=\"center\" id=\"" + this.path + "-center\"></div>\n  <div data-FlexSplit-child=\"top\" id=\"" + this.path + "-top\"></div>\n</div>");
+      opts = {
+        closable: false,
+        applyDefaultStyles: false,
+        spacing_open: 10,
+        "default": {
+          initClosed: true
+        }
+      };
+      ref1 = {
+        north: "top",
+        west: "left",
+        center: "center"
+      };
+      for (dir in ref1) {
+        if (!hasProp.call(ref1, dir)) continue;
+        pname = ref1[dir];
+        Utils.$one("#" + this.path + "-" + pname);
+        opts[dir] = {
+          paneSelector: "#" + this.path + "-" + pname,
+          onresize: (function(_this) {
+            return function(paneDir) {
+              var paneName;
+              paneName = _this.directionToPaneName(paneDir);
+              if (_this.children[paneName]) {
+                return _this.children[paneName].resize();
+              }
+            };
+          })(this),
+          initHidden: (dir !== "center") && pname !== this._ORIENTATION_MAP[this.direction],
+          size: "50%",
+          ondrag_start: function(paneDir) {
+            return $('.mc-dragover').addClass('mc-dragging-over');
+          },
+          ondrag_end: function(paneDir) {
+            return $('.mc-dragover').removeClass('mc-dragging-over');
+          }
+        };
+      }
+      this.layout = this.splitEl.layout(opts);
+      return this;
+    };
+
+
+    /*
+    Demonstrate dividing one side of this split into two sub-panes.
+    @param {"right", "bottom", "left", "top"} side the side to split
+    @param {"vertical", "horizontal"} direction the direction to create the subsplit
+     */
+
+    FlexSplit.prototype.preview = function(side, direction) {
+      return Utils.$one("#" + this.path + "-split").attr({
+        "data-preview-side": side,
+        "data-preview-direction": direction
+      });
+    };
+
+
+    /*
+    Stop a deomonstration of dividing one side of this split into two sub-panes.
+    @param {"right", "bottom", "left", "top"} side the side to split
+    @param {"vertical", "horizontal"} direction the direction to create the subsplit
+     */
+
+    FlexSplit.prototype.unpreview = function(side, direction) {
+      return Utils.$one("#" + this.path + "-split").removeAttr("data-preview-side data-preview-direction");
+    };
+
+    FlexSplit.prototype.mergePreview = function() {
+      return Utils.$one("#" + this.path + "-split").attr({
+        "data-merge-preview": "data-merge-preview"
+      });
+    };
+
+    FlexSplit.prototype.mergeUnpreview = function() {
+      return Utils.$one("#" + this.path + "-split").removeAttr("data-merge-preview");
+    };
+
+
+    /*
+    Divides one side of this split into two sub-panes.
+    TODO: Could associate this with FlexSplit.Child and not provide a side.
+    @param {"right", "bottom", "left", "top"} side the side to split
+    @param {"vertical", "horizontal"} direction the direction to create the subsplit
+    @param {TabbedView} oldTabbed the {TabbedView} to split
+    @return {Promise<Array<TabbedView>>} the two newly created `TabbedView`s that were inserted.
+     */
+
+    FlexSplit.prototype.divide = function(side, direction, oldTabbed) {
+      var id, insert, insertTabbed, modelKey, other, otherTabbed, pane, panes, ref1, ref2, split;
+      this.unpreview();
+      $("#" + this.path + "-transition").attr({
+        "data-side": side,
+        "data-direction": direction
+      });
+      modelKey = side === "right" || side === "bottom" ? "center" : side;
+      panes = oldTabbed.tabOrderedPanes();
+      ref1 = oldTabbed.panes;
+      for (id in ref1) {
+        pane = ref1[id];
+        pane.paneEl.detach();
+        pane.tabEl.detach();
+      }
+      insert = direction === "vertical" ? "top" : "left";
+      other = direction === "vertical" ? "bottom" : "right";
+      split = this.addSplitChild(side, direction);
+      ref2 = [], insertTabbed = ref2[0], otherTabbed = ref2[1];
+      Promise.join(Promise.resolve(panes), split.addTabbedChild(insert), split.addTabbedChild(other)).then(function(arg) {
+        var i, insertTabbed, len, otherTabbed, p, panes, results;
+        panes = arg[0], insertTabbed = arg[1], otherTabbed = arg[2];
+        results = [];
+        for (i = 0, len = panes.length; i < len; i++) {
+          p = panes[i];
+          insertTabbed.append(p);
+          if (p.active) {
+            results.push(insertTabbed.activePane = p);
+          } else {
+            results.push(void 0);
+          }
+        }
+        return results;
+      }).then((function(_this) {
+        return function() {
+          _this.animatePreviewEnd(direction);
+          return [insertTabbed, otherTabbed];
+        };
+      })(this));
+      return console.log("Sub-dividing the " + side + " side of the " + this.direction + " split " + direction + "ly");
+    };
+
+
+    /*
+    Animates the removal of the transition div.
+     */
+
+    FlexSplit.prototype.animatePreviewEnd = function(direction) {
+      var end, start;
+      start = {
+        opacity: 1
+      };
+      end = {
+        opacity: 0
+      };
+      return $("#" + this.path + "-transition [data-FlexSplit-transition-child]").css(start).animate(end, 750, (function(_this) {
+        return function() {
+          console.log("done");
+          $("#" + _this.path + "-transition").removeAttr("data-side data-direction");
+          return $("#" + _this.path + "-transition [data-FlexSplit-transition-child]").css({});
+        };
+      })(this));
+    };
+
+
+    /*
+    Close the current split, resulting in the area taken up by two children becoming
+    a single tabbed view.  The side that is closed will have its tabs to the right, inactive
+    (currently this is arbitrary).
+    TODO: This action merges all sub-splits, which isn't desirable.  Should preserve sub-splits.
+    @param {String} splitSide the side to close (not currently utilized)
+     */
+
+    FlexSplit.prototype.close = function(splitSide) {
+      var oldSplit, panes, parent, parentKey, ref1, split;
+      ref1 = [this.parent, this.parentKey], parent = ref1[0], parentKey = ref1[1];
+      if (parentKey === "child" && this.direction === "single") {
+        return;
+      }
+      this.layout.destroy();
+      oldSplit = Utils.$one("#" + this.path).children().detach();
+      panes = this.tabOrderedPanes();
+      return (parentKey === "child" ? (split = parent.initFlexSplit("single"), split.addTabbedChild("center")) : parent.addTabbedChild(parentKey)).then(function(tabbed) {
+        var i, len, newActivePane, p;
+        newActivePane = null;
+        for (i = 0, len = panes.length; i < len; i++) {
+          p = panes[i];
+          if (p === p.tabbedview.activePane) {
+            p.tabbedview.activatePane(null);
+            newActivePane = p;
+          }
+          tabbed.append(p);
+        }
+        return tabbed.activatePane(newActivePane);
+      });
+    };
+
+
+    /*
+    Get an ordered array of all {Panes} contained within this {FlexSplit}.
+    @return {Array<Panes>} the panes
+     */
+
+    FlexSplit.prototype.tabOrderedPanes = function() {
+      var child, ref1, ret, side;
+      ret = [];
+      ref1 = this.children;
+      for (side in ref1) {
+        child = ref1[side];
+        ret = ret.concat(child.tabOrderedPanes());
+      }
+      return ret;
+    };
+
+
+    /*
+    Add a child.
+    @param {"left", "top", "right", "bottom", "center"} side The side of the panel to add.
+    @param {FlexSplit.Child} panel The child class to add.
+     */
+
+    FlexSplit.prototype.addChildOld = function(side, panel) {
+      var modSide;
+      modSide = this._PANE_MAP[side];
+      return new panel().init(this.childPath(modSide), side, this).then((function(_this) {
+        return function(t) {
+          _this.children[modSide] = t;
+          return t;
+        };
+      })(this));
+    };
+
+
+    /*
+    Add a child {TabbedView}.
+    @param {"left", "top", "right", "bottom", "center"} side The side of the panel to add.
+    @param {"horizontal", "vertical"} direction The direction of the new {FlexSplit}.
+     */
+
+    FlexSplit.prototype.addSplitChild = function(side, direction) {
+      var modSide, split;
+      modSide = this._PANE_MAP[side];
+      split = new FlexSplit().init(this.childPath(modSide), direction, this, side);
+      this.children[modSide] = split;
+      return split;
+    };
+
+
+    /*
+    Add a child {TabbedView}.
+    @param {"left", "top", "right", "bottom", "center"} side The side of the panel to add.
+    @return {Promise}
+     */
+
+    FlexSplit.prototype.addTabbedChild = function(side) {
+      var modSide;
+      modSide = this._PANE_MAP[side];
+      return new FlexSplit.TabbedView().init(this.childPath(modSide), side, this).then((function(_this) {
+        return function(p) {
+          _this.children[modSide] = p;
+          return p;
+        };
+      })(this));
+    };
+
+    return FlexSplit;
+
+  })();
+
+
+  /*
+  A Mixin for a child pane of a FlexSplit.
+  @mixin
+   */
+
+  FlexSplit.Child = {
+    parent: null,
+    parentKey: null,
+
+    /*
+    Sets parent to the given value.
+    @param {FlexSplit.Parent} parent The value to set as parent
+    @param {String} key The key inside the parent that contains this split
+    @return {FlexSplit} This {FlexSplit}
+     */
+    setParent: function(parent, key) {
+      this.parent = parent;
+      this.parentKey = key;
+      return this;
+    },
+    init: function(path, side, parent) {
+      return Utils.abstractMethod();
+    },
+
+    /*
+    Return an array of contained panes ordered by position.
+    @return {Array<Panes>} the panes
+     */
+    tabOrderedPanes: function() {
+      return Utils.abstractMethod();
+    },
+
+    /*
+    Convert direction {"north", "east", "south", "west", "center"} to
+    paneName {"top", "center", "center", "left", "center"}
+    @param dir {"north", "east", "south", "west"} The compass direction of the pane used by layout.
+     */
+    directionToPaneName: function(dir) {
+      var ret;
+      ret = this._DIRECTION_MAP[dir];
+      Utils.assert(ret, "Unrecognized pane compass direction: " + dir);
+      return ret;
+    },
+
+    /*
+    Resize event callback.
+     */
+    resize: function() {}
+  };
+
+
+  /*
+  A Mixin for a FlexSplit parent that contains a {FlexSplit}.
+  @mixin
+   */
+
+  FlexSplit.Parent = {
+    split: null
+  };
+
+  define("FlexSplit", function(require, exports, module) {
+    BladeComponent = require("BladeComponent");
+    Promise = require("bluebird");
+    $ = require("jquery");
+    Utils = require("Utils");
+    Logging = require("Logging");
+    require("jquery.ui");
+    require("jquery.layout");
+    FlexSplit.prototype = $.extend({}, BladeComponent, FlexSplit.Parent, FlexSplit.Child, module.config(), FlexSplit.prototype);
+    return FlexSplit;
+  });
+
+}).call(this);

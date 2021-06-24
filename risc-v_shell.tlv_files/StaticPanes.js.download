@@ -1,0 +1,135 @@
+(function() {
+  var $, Logging, Pane, Promise, StaticPanes, Utils, ref;
+
+  ref = [], Pane = ref[0], $ = ref[1], Logging = ref[2], Utils = ref[3], Promise = ref[4];
+
+
+  /*
+  A collection of Panes, each with content defined in a Blade file.
+   */
+
+  StaticPanes = (function() {
+    StaticPanes.prototype.panes = null;
+
+    StaticPanes.prototype.ide = null;
+
+
+    /*
+    Constructor
+     */
+
+    function StaticPanes(ide) {
+      var opts, tutorial;
+      this.ide = ide;
+      tutorial = null;
+      opts = {
+        closable: true
+      };
+      this.panes = {};
+      this.newPane("About", "About", "About", {}, opts);
+      this.newPane("Help", "Help", "Help", {}, opts);
+      this.newPane("MakerchipTutorial", "Makerchip Tutorial", "Makerchip IDE", {
+        tutorial: tutorial
+      }, opts);
+      this.newPane("CombinationalLogicTutorial", "Tutorial-Combo", "Combinational Logic", {
+        tutorial: tutorial
+      }, opts);
+      this.newPane("SequentialLogicTutorial", "Tutorial-Seq", "Sequential Logic", {
+        tutorial: tutorial
+      }, opts);
+      this.newPane("PipelineTutorial", "Tutorial-Pipes", "Pipelines", {
+        tutorial: tutorial
+      }, opts);
+      this.newPane("ValidityTutorial", "Tutorial-Valid", "Validity", {
+        tutorial: tutorial
+      }, opts);
+      this.newPane("AlignmentTutorial", "Tutorial-Align", "Alignment", {
+        tutorial: tutorial
+      }, opts);
+      this.newPane("HierarchyTutorial", "Tutorial-Hier", "Hierarchy", {
+        tutorial: tutorial
+      }, opts);
+      this.newPane("StateTutorial", "Tutorial-State", "State", {
+        tutorial: tutorial
+      }, opts);
+      this.newPane("FlowTutorial", "Tutorial-Flow", "Transaction Flow", {
+        tutorial: tutorial
+      }, opts);
+      this.newPane("CodeExamples", "Code-Examples", "Examples", {
+        tutorial: tutorial
+      }, opts);
+      this.newPane("CourseSlides", "Course Slides", "Course Slides", {
+        tutorial: tutorial
+      }, opts);
+      this.newPane("ICCD2017Paper", "TA Paper", "Timing Abstraction Paper", {
+        tutorial: tutorial
+      }, opts);
+      this.newPane("TLXSpec", "TL-X Spec", "TL-X 1d Spec", {
+        tutorial: tutorial
+      }, opts);
+    }
+
+
+    /*
+    Create a new static {Pane}.
+    There is no formal class for a StaticPane. It is just a {Pane} with
+    the following fields tacked on:
+      tags (may include "tutorial")
+    @param {String} bladeName The name of the Blade file as for {Pane}.init(..).
+    @param {String} mnemonic A unique name for the tab used as the tab title as for {Pane}.init(..).
+    @param {String} menuText The text for the meneItem/button that will open this pane.
+    @param {Object} tags An object characterizing the {Pane}; expected values:
+                         {}, {tutorial: null}
+                    name and opts args are appended for later use in initialization.
+    @param {Object} opts As for {Pane}.init(..).
+     */
+
+    StaticPanes.prototype.newPane = function(bladeName, mnemonic, menuText, tags, opts) {
+      var pane;
+      pane = new Pane();
+      pane.tags = tags;
+      pane.tags.bladeName = bladeName;
+      pane.tags.mnemonic = mnemonic;
+      pane.tags.menuText = menuText;
+      pane.tags.opts = opts;
+      this.panes[mnemonic] = pane;
+      return pane;
+    };
+
+
+    /*
+    Initialize the given {Pane}, based on parameters provided by newPane(..).
+    @param {Pane} pane The static {Pane} to initialize.
+    @return {Promise<Pane>}
+     */
+
+    StaticPanes.prototype.init = function(mnemonic) {
+      var pane;
+      if (typeof window.ga === "function") {
+        window.ga("send", {
+          hitType: "event",
+          eventCategory: "Static Page",
+          eventAction: "open",
+          eventLabel: mnemonic
+        });
+      }
+      pane = this.panes[mnemonic];
+      Utils.assert(mnemonic === pane.tags.mnemonic);
+      return pane.initPane(pane.tags.bladeName, mnemonic, this.ide, null, null, pane.tags.opts);
+    };
+
+    return StaticPanes;
+
+  })();
+
+  define("StaticPanes", function(require, exports, module) {
+    Logging = require("Logging");
+    Pane = require("Pane");
+    $ = require("jquery");
+    Logging = require("Logging");
+    Utils = require("Utils");
+    Promise = require("bluebird");
+    return StaticPanes;
+  });
+
+}).call(this);

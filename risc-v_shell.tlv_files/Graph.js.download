@@ -1,0 +1,180 @@
+(function() {
+  var $, Graph, Logging, Pane, Promise, Utils, ref;
+
+  ref = [], Pane = ref[0], $ = ref[1], Logging = ref[2], Utils = ref[3], Promise = ref[4];
+
+
+  /*
+  A module that displays the result of compilation as a graph.
+  
+  @extend Pane
+  @extend ModuleConfigObject
+  @extend ModelViewSync
+   */
+
+  Graph = (function() {
+    function Graph() {}
+
+    Graph.prototype.init = function(name, ide, project, tabbedview) {
+      return this.initPane("Graph", name, ide, project, tabbedview, {}, true).then((function(_this) {
+        return function() {
+          _this.enableTimestamp();
+          _this.content = new Graph.Content(_this);
+          return _this;
+        };
+      })(this));
+    };
+
+
+    /*
+    Highlights the signals with the given logical entity in the graph
+    @param {String} le the logical entity to highlight
+     */
+
+    Graph.prototype._highlightLogicalElement = function(le) {
+      return $("[logical_entity='" + le + "']", this.contentContainerEl).find("[stroke]").addClass("highlight");
+    };
+
+
+    /*
+    Unhighlights all signals in the prah
+     */
+
+    Graph.prototype._unhighlightLogicalElements = function() {
+      return $("[logical_entity] .highlight", this.contentContainerEl).removeClass("highlight");
+    };
+
+
+    /*
+    Sets compiler in the LiveUI model to the given value and invalidates the model.
+    @param {SandPiperCompiler} compiler The value to set as compiler
+    @return Graph
+     */
+
+    Graph.prototype.compiler = function(compiler) {
+      compiler.on("graph", (function(_this) {
+        return function(svg) {
+          return _this.content.newSVG(svg);
+        };
+      })(this));
+      compiler.on("graphviz/done", (function(_this) {
+        return function(data) {
+          if (data.success === "success") {
+            return _this.setStatus("success");
+          }
+          return _this.setStatus(data.timeout ? "timeout" : "fail");
+        };
+      })(this));
+      compiler.on("newcompile", (function(_this) {
+        return function() {
+          return _this.setStatus("working");
+        };
+      })(this));
+      return this;
+    };
+
+    return Graph;
+
+  })();
+
+
+  /*
+  Scalable graph contents.
+  @extend Pane.ScalableSVG
+  TODO: Use proper inheritance.
+   */
+
+  Graph.Content = (function() {
+    function Content(pane) {
+      this.construct(pane);
+    }
+
+
+    /*
+    Sets the bounds of the SVG content.
+    
+    Graphviz draws the graph with the following properties (example below):
+      Graph is within graph coords (0, -y-size), (x-size, 0)
+      Note that Y coordinates are all negative, X coordinates are all positive
+      The <svg ...> width and height match the viewbox width and height,
+      where the viewbox coordinates and are (0, 0) (x-size + 8, y-size + 8).
+      The graph is translated to center it without including the 4-pixel padding.
+    
+    Example:
+      <svg width="1176pt" height="2052pt"
+      viewBox="0.00 0.00 1176.00 2052.00" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+      <g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 2048)">
+    
+    Pane.ScalableSVG reassigns viewbox and translation attributes differently
+    (to have user coords (0,0) in its center for easier zooming). We just need
+    to extract the bounds of graph content under the assumptions above. We do so
+    with 4-pixel padding.
+     */
+
+    Content.prototype.setBounds = function(viewBox) {
+      return this.userBounds.set(-4, -(viewBox.height - 4), viewBox.width, viewBox.height);
+    };
+
+
+    /*
+    Initialize bindings for new graph content.
+     */
+
+    Content.prototype.initContent = function() {
+
+      /*
+      Listens to clicks on the background of the graph, and un-highlights the current logical element.
+      Rejects if the click event is related to a drag (`@dragging`), if the click is on one of the zoom buttons
+      (`[data-Diagram-zooming]`), or on another logical entity (see the seperate click listener for `[logical_entity]`).
+      Entire listener is a hack.
+       */
+      this.contentContainerEl.on("click", (function(_this) {
+        return function(e) {
+          if (_this.pane.dragging || !_this.contentValid) {
+            return;
+          }
+          if ($(e.target).parents("[data-diagram-zooming]").length > 0) {
+            return;
+          }
+          if ($(e.target).attr("logical_entity") || $(e.target).parents("[logical_entity]").attr("logical_entity")) {
+            return;
+          }
+          e.preventDefault();
+          return _this.pane.unhighlightLogicalElements();
+        };
+      })(this));
+      return this.contentContainerEl.on("click", "[logical_entity]", (function(_this) {
+        return function(e) {
+          var le;
+          if (_this.pane.dragging || !_this.contentValid) {
+            return;
+          }
+          le = $(e.target).parents("[logical_entity]").last().attr("logical_entity");
+          if (!le) {
+            return;
+          }
+          e.preventDefault();
+          return _this.pane.highlightLogicalElement(le, e.ctrlKey);
+        };
+      })(this));
+    };
+
+    return Content;
+
+  })();
+
+  define("Graph", function(require, exports, module) {
+    var ModelViewSync;
+    Logging = require("Logging");
+    ModelViewSync = require("ModelViewSync");
+    Pane = require("Pane");
+    $ = require("jquery");
+    Logging = require("Logging");
+    Utils = require("Utils");
+    Promise = require("bluebird");
+    Graph.prototype = $.extend({}, Pane.prototype, ModelViewSync, module.config(), Pane.Scalable, Graph.prototype);
+    Graph.Content.prototype = $.extend({}, Pane.ScalableSVG.prototype, Graph.Content.prototype);
+    return Graph;
+  });
+
+}).call(this);

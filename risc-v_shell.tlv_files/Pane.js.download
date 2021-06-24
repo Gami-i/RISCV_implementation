@@ -1,0 +1,1009 @@
+(function() {
+  var extend = function(child, parent) { for (var key in parent) { if (hasProp.call(parent, key)) child[key] = parent[key]; } function ctor() { this.constructor = child; } ctor.prototype = parent.prototype; child.prototype = new ctor(); child.__super__ = parent.prototype; return child; },
+    hasProp = {}.hasOwnProperty;
+
+  require.config({
+    paths: {
+      'interact': 'https://cdnjs.cloudflare.com/ajax/libs/interact.js/1.2.6/interact.min'
+    }
+  });
+
+  define("Pane", function(require, exports, module) {
+    var $, BladeComponent, Logging, Pane, PaneComponent, PanelLabel, Promise, TabbedView, Utils, interact, livestamp;
+    Logging = require("Logging");
+    BladeComponent = require("BladeComponent");
+    TabbedView = require("TabbedView");
+    $ = require("jquery");
+    Utils = require("Utils");
+    Promise = require("bluebird");
+    PanelLabel = require("PanelLabel");
+    require("livestamp");
+    livestamp = $.fn.livestamp;
+    interact = require("interact");
+
+    /*
+    A {BladeComponent} for the contents of a pane within TabbedView
+    
+    @extend BladeComponent
+     */
+    PaneComponent = (function() {
+      function PaneComponent() {}
+
+      PaneComponent.prototype.seqID = null;
+
+      PaneComponent.prototype.bladeName = null;
+
+      PaneComponent.prototype.mnemonic = null;
+
+      PaneComponent.prototype.closable = false;
+
+      PaneComponent.prototype.scalable = false;
+
+      PaneComponent.prototype.steppable = false;
+
+      PaneComponent.prototype.initPromise = null;
+
+      PaneComponent.prototype.paneEl = null;
+
+      PaneComponent.prototype.tabEl = null;
+
+      PaneComponent.prototype.timeEl = null;
+
+      PaneComponent.prototype._tabStatusEl = null;
+
+      PaneComponent.prototype.tabbedview = null;
+
+      PaneComponent.prototype.alwaysInDOM = true;
+
+      PaneComponent.prototype.opened = false;
+
+      PaneComponent.prototype.active = false;
+
+      PaneComponent.prototype.timestampEnabled = false;
+
+      PaneComponent.prototype.label = null;
+
+
+      /*
+      @property {String} The status reflected in the tab.  Values are:
+      
+      - "none" No status indication
+      - "success" A positive response (currently displayed as a checkmark)
+      - "fail" A negative response (currently displayed as an x)
+      - "working" Update pending (compile in progress) (currently displayed as a spinner)
+      - "unsaved" Unsaved content
+      - "outdated" Modified content (saved but not compiled) (currently displayed as a blue dot)
+       */
+
+      PaneComponent.prototype.tabstatus = "none";
+
+
+      /*
+      To be overridden to provide model initialization within @initPane().
+       */
+
+      PaneComponent.prototype.modelInit = function() {};
+
+
+      /*
+      Create an uninitialized tab element (inactive, null tabstatus), set @tabEl and return it,
+      without adding it to the DOM.
+      @return {jQuery} tabElement
+       */
+
+      PaneComponent.prototype._createTabElement = function() {
+        var closableAttr, closeEl;
+        closableAttr = this.closable ? " mc-pane-tab-closable" : "";
+        this.tabEl = $(("<a href=\"#\" data-tabbedview-ref=\"" + this.mnemonic + "\" ") + ("class=\"nav-item nav-link mc-pane-tab" + closableAttr + "\">" + this.mnemonic + "</a>"));
+        if (this.closable) {
+          closeEl = $("<i class=\"fa fa-fw fa-times mc-pane-tab-close\"></i>").click((function(_this) {
+            return function(e) {
+              e.stopPropagation();
+              return _this.close();
+            };
+          })(this));
+          this.tabEl.append(closeEl);
+        }
+        this._tabStatusEl = $(this._newStatusNode("none"));
+        this.tabEl.prepend(this._tabStatusEl);
+        return this.tabEl.click((function(_this) {
+          return function(e) {
+            return _this.activate();
+          };
+        })(this));
+      };
+
+
+      /*
+      Initialize and render the Pane.
+      @param {String} bladeName the name of the corresponding blade file (no path or extension).
+      @param {String} mnemonic a unique name for this Pane, used as tab text as well as unique identifier.
+                      (TODO: Can use 'name', but I was worried about conflict w/ base classes.  I think it's ok.)
+      @param {TabbedView, jQuery, null} tabbedview or jQuery element into which to open this {Pane} or
+                                        null to not open immediately.
+      @param {Object} options (optional) options passed to blade compile.
+      @return {Promise<@>} @initPromise (resolving to @).
+       */
+
+      PaneComponent.prototype.initPane = function(bladeName, mnemonic, tabbedview, options) {
+        this.bladeName = bladeName;
+        this.mnemonic = mnemonic;
+        if (options == null) {
+          options = {};
+        }
+        this.seqID = TabbedView.paneID++;
+        TabbedView.allPanes[this.mnemonic] = this;
+        this.path = "pane-" + this.seqID + "-" + this.bladeName;
+        if (options.closable != null) {
+          this.closable = options.closable;
+        }
+        if (this.steppable) {
+          this.steppableInit();
+        }
+        this.tabPath = "";
+        options["path"] = this.path;
+        if (options.mnemonic == null) {
+          options.mnemonic = this.mnemonic;
+        }
+        options["scalable"] = this.scalable;
+        options["steppable"] = this.steppable;
+        this.initPromise = this.compileComponent(this.bladeName, options).then((function(_this) {
+          return function(html) {
+            _this.paneEl = $("<div class=\"mc-TabbedView-pane\" id=\"" + _this.path + "\" data-tabbedview-active=\"false\">" + html + "</div>\"");
+            if (_this.scalable) {
+              _this.scalableInitDOM();
+            }
+            if (_this.steppable) {
+              _this.steppableInitDOM();
+            }
+            _this.tabEl = _this._createTabElement();
+            return _this;
+          };
+        })(this))["catch"](function(err) {
+          return console.log(err);
+        });
+        if (tabbedview != null) {
+          return this.open(tabbedview);
+        } else {
+          return this.initPromise;
+        }
+      };
+
+
+      /*
+      Open this pane (as an action of the {Promise} of init(), so only after initialization).
+      @param {TabbedView, jQuery} tabbedview or jQuery element into which to open this {Pane}
+      @return {Promise<Pane>} The promise.
+       */
+
+      PaneComponent.prototype.open = function(tabbedview1) {
+        this.tabbedview = tabbedview1;
+        this.opened = "pending";
+        return this.initPromise.then((function(_this) {
+          return function(thisPane) {
+            _this.opened = true;
+            if (_this.tabbedview instanceof TabbedView) {
+              _this.tabbedview.append(_this);
+            } else {
+              _this.active = true;
+              _this.tabbedview.append(_this.paneEl);
+            }
+            return _this.initOpened();
+          };
+        })(this));
+      };
+
+
+      /*
+      Initialize the pane once added to the DOM.
+      @return {Promise}
+       */
+
+      PaneComponent.prototype.initOpened = function() {
+        return Promise.resolve(this);
+      };
+
+
+      /*
+      Resize callback. Called when pane is activated or resized when active.
+       */
+
+      PaneComponent.prototype.resize = function() {};
+
+
+      /*
+      Enable a timestamp on this pane.  Call this under initPane(..).then =>.
+       */
+
+      PaneComponent.prototype.enableTimestamp = function() {
+        var now;
+        now = new Date();
+        this.timestampMode = "static";
+        this.timestampEl = $(("<div id=\"" + this.path + "-timestamp\" data-panelstatus=\"data-PanelStatus\"") + (" data-mode=\"" + this.timestampMode + "\" class=\"no-select\">") + "<span class=\"staticStr\">Not compiled.</span>" + "<span class=\"prefix\">Last updated </span>" + "<span class=\"timestamp\"></span>" + "</div>");
+        this.paneEl.append(this.timestampEl);
+        $(".timestamp", this.timestampEl).livestamp(new Date());
+        return this.timestampEnabled = true;
+      };
+
+
+      /*
+      Update timestamp to reflect current time.
+       */
+
+      PaneComponent.prototype.updateTimestamp = function() {
+        $(".timestamp", this.timestampEl).livestamp(new Date());
+        if (this.timestampMode !== "time") {
+          this.timestampMode = "time";
+        }
+        return this.timestampEl.attr("data-mode", this.timestampMode);
+      };
+
+
+      /*
+      Get position of this pane's tab.
+      @return {int} tab position
+       */
+
+      PaneComponent.prototype.getTabPosition = function() {
+        return this.tabbedview.getPosition(this.tabEl);
+      };
+
+
+      /*
+      Create a new tab status element.
+      @param {String} the status, as defined in {TabbedView.statusEl}
+      @return [Node] the new tab status node.
+       */
+
+      PaneComponent.prototype._newStatusNode = function(tabstatus) {
+        this.tabstatus = tabstatus;
+        return TabbedView.statusEl[this.tabstatus].cloneNode(true);
+      };
+
+
+      /*
+      Set the status of this Pane.
+      @param {String} tabstatus the new status value
+       */
+
+      PaneComponent.prototype.setStatus = function(tabstatus) {
+        var el;
+        this.tabstatus = tabstatus;
+        el = this._newStatusNode(this.tabstatus);
+        this._tabStatusEl.replaceWith(el);
+        this._tabStatusEl = $(el);
+        this._tabStatusEl.attr("data-status", this.tabstatus);
+        if (this.timestampEnabled && ((this.tabstatus === "success") || (this.tabstatus === "fail"))) {
+          return this.updateTimestamp();
+        }
+      };
+
+
+      /*
+      Construct and add a label dropdown menu to the pane.
+      @param {Object} options Options passed to the blade model of the {PanelLabel}.
+      @return {Promise}
+       */
+
+      PaneComponent.prototype.addLabel = function(options) {
+        this.label = new PanelLabel();
+        return this.label.init(this, options);
+      };
+
+
+      /*
+      Hides the PanelLabel, and listens for mouse movement to reinstate the button.
+       */
+
+      PaneComponent.prototype.hideLabel = function() {
+        var el;
+        if (this.label.hidden) {
+          return;
+        }
+        this.label.hide();
+        el = this.paneEl;
+        return el.on("mousemove", (function(_this) {
+          return function() {
+            if (!_this.label.hidden) {
+              return;
+            }
+            _this.label.show();
+            return el.off("mousemove");
+          };
+        })(this));
+      };
+
+
+      /*
+      Set whether the tab is active, updating the DOM for the tab.
+      @param {Boolean} state the new state
+       */
+
+      PaneComponent.prototype.setTabActive = function(state) {
+        if (this.active !== state) {
+          this.active = state;
+          if (state) {
+            return Utils.node(this.tabEl).classList.add("active");
+          } else {
+            return Utils.node(this.tabEl).classList.remove("active");
+          }
+        }
+      };
+
+
+      /*
+      Activates this pane (activates its tab and displays it)
+       */
+
+      PaneComponent.prototype.activate = function() {
+        return this.tabbedview.activatePane(this);
+      };
+
+
+      /*
+      Close this Pane.
+       */
+
+      PaneComponent.prototype.close = function() {
+        this.tabbedview.dissociate(this);
+        this.paneEl.detach();
+        this.tabEl.detach();
+        this.opened = false;
+        return this;
+      };
+
+      return PaneComponent;
+
+    })();
+    PaneComponent.Rect = (function() {
+      Rect.prototype.x = null;
+
+      Rect.prototype.y = null;
+
+      Rect.prototype.x2 = null;
+
+      Rect.prototype.y2 = null;
+
+      Rect.prototype.width = null;
+
+      Rect.prototype.height = null;
+
+      function Rect() {}
+
+      Rect.prototype.set = function(x1, y1, width, height) {
+        this.x = x1;
+        this.y = y1;
+        this.width = width;
+        this.height = height;
+        this.x2 = this.x + this.width;
+        this.y2 = this.y + this.height;
+        return this;
+      };
+
+      return Rect;
+
+    })();
+
+    /*
+    A Pane in the makerchip IDE.
+    This adds platform awareness to PaneComponent.
+     */
+    Pane = (function(superClass) {
+      extend(Pane, superClass);
+
+      function Pane() {
+        return Pane.__super__.constructor.apply(this, arguments);
+      }
+
+      Pane.prototype.ide = null;
+
+      Pane.prototype.project = null;
+
+
+      /*
+      Initialize and render the Pane.
+      @param {String} bladeName the name of the corresponding blade file (no path or extension).
+      @param {String} mnemonic a unique name for this Pane, used as tab text as well as unique identifier.
+                      (TODO: Can use 'name', but I was worried about conflict w/ base classes.  I think it's ok.)
+      @param {TabbedView, jQuery, null} tabbedview or jQuery element into which to open this {Pane} or
+                                        null to not open immediately.
+      @param {Object} options (optional) options passed to blade compile.
+      @return {Promise<@>} @initPromise (resolving to @).
+       */
+
+      Pane.prototype.initPane = function(bladeName, mnemonic, ide, project, tabbedview, options) {
+        this.bladeName = bladeName;
+        this.mnemonic = mnemonic;
+        this.ide = ide;
+        this.project = project;
+        if (options == null) {
+          options = {};
+        }
+        return Pane.__super__.initPane.call(this, this.bladeName, this.mnemonic, tabbedview, options);
+      };
+
+      return Pane;
+
+    })(PaneComponent);
+
+    /*
+    A mixin to extend Pane with controls for scaling the visual context.
+    @mixin
+    
+      Zooming and Panning Methodology
+    
+      Coordinate Systems:
+        Page coordinates:      In pixels, relative to the upper-left of the page. These are provided to mouse events.
+        Container coordinates: Also in pixels, where (0, 0) is the upper-left of the outermost <svg ...> element.
+        User coordinates:      The coordinates in the scalable context for the "user" to interact with.
+     */
+    Pane.Scalable = {
+      scalable: true,
+      contentContainerEl: null,
+      content: null,
+      dragging: false,
+      ZOOM_BUTTON_MASK: 4,
+      ZOOM_SLUGGISHNESS: 30,
+      PINCH_SLUGGISHNESS: 30,
+      WHEEL_ZOOM_SLUGGISHNESS_PIXELS: 200,
+      WHEEL_ZOOM_SLUGGISHNESS_LINES: 10,
+      WHEEL_ZOOM_SLUGGISHNESS_PAGES: 1,
+      scalableInitDOM: function() {
+        var buttonZoomSensitivity, keyboardZoom, keyboardZoomSensitivity, keycode, scalingEls;
+        scalingEls = $("<div role=\"group\" data-" + this.mnemonic + "-zooming=\"data-" + this.mnemonic + "-zooming\"\n     class=\"btn-group mc-pane-controls mc-zooming-controls\" id=\"" + this.path + "-zoom\">\n  <button data-" + this.mnemonic + "-zoom=\"in\" title=\"Zoom In\" class=\"btn btn-secondary\">\n    <i class=\"fa fa-fw fa-plus\"></i></button>\n  <button data-" + this.mnemonic + "-zoom=\"out\" title=\"Zoom Out\" class=\"btn btn-secondary\">\n    <i class=\"fa fa-fw fa-minus\"></i></button>\n  <button data-" + this.mnemonic + "-zoom=\"reset\" title=\"Reset Zoom\" class=\"btn btn-secondary\">\n    <i class=\"fa fa-fw fa-expand\"></i></button>\n</div><div class=\"mc-scalable-container\"><div>");
+        this.paneEl[0].children[0].appendChild(scalingEls[0]);
+        this.contentContainerEl = $(this.paneEl[0].children[0].appendChild(scalingEls[1]));
+        interact("#" + this.path + " .mc-scalable-container").draggable({
+          inertia: true
+        }).gesturable({
+          onmove: (function(_this) {
+            return function(e) {
+              e.preventDefault();
+              if (_this.content !== null && _this.content.contentValid) {
+                return _this.content.zoomContentBy(1 + e.ds / _this.PINCH_SLUGGISHNESS);
+              }
+            };
+          })(this)
+        }).on('touchmove', function(e) {
+          return e.preventDefault();
+        }).on('dragstart', (function(_this) {
+          return function(e) {
+            return _this.dragging = true;
+          };
+        })(this)).on('dragend', (function(_this) {
+          return function(e) {
+            return setTimeout((function() {
+              return _this.dragging = false;
+            }), 0);
+          };
+        })(this)).on('dragmove', (function(_this) {
+          return function(e) {
+            e.preventDefault();
+            if (_this.content !== null && _this.content.contentValid) {
+              if ((e.buttons & _this.ZOOM_BUTTON_MASK) !== 0) {
+                return _this.content.zoomContentBy - e.dy / _this.ZOOM_SLUGGISHNESS;
+              } else {
+                return _this.content.panContentBy(e.dx, e.dy);
+              }
+            }
+          };
+        })(this));
+        this.contentContainerEl.on("wheel", (function(_this) {
+          return function(e) {
+            var amt, ref, sluggishness, userX, userY;
+            e.preventDefault();
+            if ((e.originalEvent == null) || (e.originalEvent.deltaY == null) || (e.originalEvent.deltaMode == null)) {
+              return;
+            }
+            if (_this.content !== null && _this.content.contentValid) {
+              sluggishness = e.originalEvent.deltaMode === 0 ? _this.WHEEL_ZOOM_SLUGGISHNESS_PIXELS : e.originalEvent.deltaMode === 1 ? _this.WHEEL_ZOOM_SLUGGISHNESS_LINES : _this.WHEEL_ZOOM_SLUGGISHNESS_PAGES;
+              amt = -e.originalEvent.deltaY / sluggishness;
+              ref = _this.userCoordsOfContainerEvent(e), userX = ref.userX, userY = ref.userY;
+              return _this.content.zoomContentByAt(amt, userX, userY);
+            }
+          };
+        })(this));
+        keyboardZoomSensitivity = 0.5;
+        keycode = {
+          leftBracket: 219,
+          rightBracket: 221,
+          equals: 187,
+          minus: 189,
+          kpMinus: 109,
+          kpPlus: 107
+        };
+        keyboardZoom = (function(_this) {
+          return function(e) {
+            var ref, ref1;
+            if (!_this._zoomListening) {
+              return;
+            }
+            if (_this.content !== null && _this.content.contentValid) {
+              if ((ref = e.keyCode) === keycode.rightBracket || ref === keycode.equals || ref === keycode.kpPlus) {
+                _this.content.zoomContentBy(keyboardZoomSensitivity);
+              }
+              if ((ref1 = e.keyCode) === keycode.leftBracket || ref1 === keycode.minus || ref1 === keycode.kpMinus) {
+                return _this.content.zoomContentBy(-1 * keyboardZoomSensitivity);
+              }
+            }
+          };
+        })(this);
+        this.contentContainerEl.on("mouseenter", (function(_this) {
+          return function(e) {
+            if (_this._zoomListening) {
+              return;
+            }
+            $(document).on('keydown', keyboardZoom);
+            return _this._zoomListening = true;
+          };
+        })(this));
+        this.contentContainerEl.on("mouseleave", (function(_this) {
+          return function(e) {
+            $(document).off("keydown", keyboardZoom);
+            return _this._zoomListening = false;
+          };
+        })(this));
+        buttonZoomSensitivity = 0.25;
+        Utils.$one("[data-" + this.mnemonic + "-zoom='in']", this.paneEl).click((function(_this) {
+          return function(e) {
+            e.preventDefault();
+            if (_this.content !== null && _this.content.contentValid) {
+              return _this.content.zoomContentBy(buttonZoomSensitivity);
+            }
+          };
+        })(this));
+        Utils.$one("[data-" + this.mnemonic + "-zoom='out']", this.paneEl).click((function(_this) {
+          return function(e) {
+            e.preventDefault();
+            if (_this.content !== null && _this.content.contentValid) {
+              return _this.content.zoomContentBy(-1 * buttonZoomSensitivity);
+            }
+          };
+        })(this));
+        return Utils.$one("[data-" + this.mnemonic + "-zoom='reset']", this.paneEl).click((function(_this) {
+          return function(e) {
+            e.preventDefault();
+            if (_this.content !== null && _this.content.contentValid) {
+              _this.content.centerContent(false);
+              return _this.content.setContentScale(1.0);
+            }
+          };
+        })(this));
+      },
+      userCoordsOfContainerEvent: function(e) {
+        var bounds, el, ret;
+        el = this.contentContainerEl[0];
+        bounds = el.getBoundingClientRect();
+        ret = {
+          userX: this.content.userFocus.x + this.content.pixelsToUserUnits(e.pageX - (bounds.left + bounds.right) / 2.0),
+          userY: this.content.userFocus.y + this.content.pixelsToUserUnits(e.pageY - (bounds.top + bounds.bottom) / 2.0)
+        };
+        return ret;
+      }
+    };
+
+    /*
+    The contents of a Pane.Scalable. This has all the functionality for zooming/panning without
+    applying the properties to the DOM. Derived classes apply these properties appropriately to
+    the DOM for specific types of content (SVG, FabricJS, etc.)
+     */
+    Pane.ScalableContent = (function() {
+      ScalableContent.prototype.contentContainerEl = null;
+
+      ScalableContent.prototype.pane = null;
+
+      ScalableContent.prototype.contentValid = false;
+
+      ScalableContent.prototype.userBounds = null;
+
+      ScalableContent.prototype.userFocus = null;
+
+      ScalableContent.prototype.contentScale = 1.0;
+
+      ScalableContent.prototype.is_first = true;
+
+      function ScalableContent(pane) {
+        this.construct(pane);
+      }
+
+      ScalableContent.prototype.construct = function(pane1) {
+        this.pane = pane1;
+        return this.contentContainerEl = this.pane.contentContainerEl;
+      };
+
+
+      /*
+      For derived classes to define with their own content initialization.
+       */
+
+      ScalableContent.prototype.initContent = function() {
+        return Utils.abstractMethod();
+      };
+
+
+      /*
+      Center the content
+      @param {Boolean} refresh (optional) whether to refresh to reflect the changes, default true
+       */
+
+      ScalableContent.prototype.centerContent = function(refresh) {
+        var contentCenterX, contentCenterY;
+        if (refresh == null) {
+          refresh = true;
+        }
+        contentCenterX = (this.userBounds.x + this.userBounds.x2) / 2.0;
+        contentCenterY = (this.userBounds.y + this.userBounds.y2) / 2.0;
+        return this.focusContentOn(contentCenterX, contentCenterY, refresh);
+      };
+
+
+      /*
+      Zoom by the given power of two: exp = 1 zooms in 2x scale, exp = 0 does nothing, exp = -1 zooms out to 1/2 scale
+      @param {Number} exp the power of 2 to scale by
+      @param {Boolean} refresh (optional) whether to refresh the DOM to reflect the changes, default true
+       */
+
+      ScalableContent.prototype.zoomContentBy = function(exp, refresh) {
+        if (refresh == null) {
+          refresh = true;
+        }
+        return this.setContentScale(this.contentScale * Math.pow(2, exp), refresh);
+      };
+
+
+      /*
+      Zoom by the given power of two: exp = 1 zooms in 2x scale, exp = 0 does nothing, exp = -1 zooms out to 1/2 scale
+      at given user coords.
+      @param {Number} exp the power of 2 to scale by
+      @param {Number} x user X coord
+      @param {Number} y user Y coord
+      @param {Boolean} refresh (optional) whether to refresh the DOM to reflect the changes, default true
+       */
+
+      ScalableContent.prototype.zoomContentByAt = function(exp, userX, userY, refresh) {
+        var scaling_factor;
+        if (refresh == null) {
+          refresh = true;
+        }
+        this.zoomContentBy(exp, false);
+        scaling_factor = Math.pow(2, exp);
+        return this.focusContentOn(this.userFocus.x + (userX - this.userFocus.x) * (scaling_factor - 1.0) / scaling_factor, this.userFocus.y + (userY - this.userFocus.y) * (scaling_factor - 1.0) / scaling_factor, refresh);
+      };
+
+
+      /*
+      Pan by given amount (in pixels)
+      @param {Number} d_left amount to pan left
+      @param {Number} d_top amount to pan up
+      @param {Boolean} refresh (optional) whether to refresh the DOM to reflect the changes, default true
+       */
+
+      ScalableContent.prototype.panContentBy = function(d_left, d_top, refresh) {
+        if (refresh == null) {
+          refresh = true;
+        }
+        return this.focusContentOn(this.userFocus.x - this.pixelsToUserUnits(d_left), this.userFocus.y - this.pixelsToUserUnits(d_top), refresh);
+      };
+
+
+      /*
+      Set the focal point of the content (the point that is centered in the view),
+      but not beyond the bounds of the content.
+      @param {Number} x the x-coord to focus on
+      @param {Number} y the y-coord to focus on
+      @param {Boolean} refresh (optional) whether to refresh to reflect the changes, default true
+       */
+
+      ScalableContent.prototype.focusContentOn = function(x, y, refresh) {
+        if (refresh == null) {
+          refresh = true;
+        }
+        if (x > this.userBounds.x2) {
+          x = this.userBounds.x2;
+        }
+        if (x < this.userBounds.x) {
+          x = this.userBounds.x;
+        }
+        if (y > this.userBounds.y2) {
+          y = this.userBounds.y2;
+        }
+        if (y < this.userBounds.y) {
+          y = this.userBounds.y;
+        }
+        this.userFocus = {
+          x: x,
+          y: y
+        };
+        if (refresh) {
+          return this.refreshContentPosition();
+        }
+      };
+
+      ScalableContent.prototype.positionNewContent = function() {
+        if (this.is_first) {
+          return this.centerContent();
+        } else {
+          return this.focusContentOn(this.userFocus.x, this.userFocus.y);
+        }
+      };
+
+
+      /*
+      Set the scale of the content
+      @param {Number} scale the new scale of the content
+      @param {Boolean} refresh (optional) whether to refresh the content to reflect the changes, default true
+       */
+
+      ScalableContent.prototype.setContentScale = function(scale, refresh) {
+        if (refresh == null) {
+          refresh = true;
+        }
+        this.contentScale = scale;
+        if (refresh) {
+          return this.refreshContentPosition();
+        }
+      };
+
+
+      /*
+      Reflect the content position/scale in the DOM.
+       */
+
+      ScalableContent.prototype.refreshContentPosition = function() {
+        return Utils.abstractMethod();
+      };
+
+
+      /*
+      Converts number of pixels to user units
+      @param {Number} px the dimension (or distance) in pixels
+      @return {Number} the resulting number of user units
+       */
+
+      ScalableContent.prototype.pixelsToUserUnits = function(px) {
+        return Utils.abstractMethod();
+      };
+
+
+      /*
+      Perform any necessary cleanup to destroy cleanly.
+       */
+
+      ScalableContent.prototype.destroy = function() {};
+
+      return ScalableContent;
+
+    })();
+
+    /*
+    SVG-specific scalable context.
+     */
+    Pane.ScalableSVG = (function(superClass) {
+      extend(ScalableSVG, superClass);
+
+      function ScalableSVG() {
+        return ScalableSVG.__super__.constructor.apply(this, arguments);
+      }
+
+      ScalableSVG.prototype.gDOMEl = null;
+
+
+      /*
+      Set @userBounds for new SVG content.
+      @param {Object} viewbox the SVG's viewbox (which is useful for graphviz, but should change to become more generic)
+       */
+
+      ScalableSVG.prototype.setBounds = function(viewbox) {
+        return Utils.abstractMethod();
+      };
+
+
+      /*
+      Displays the given SVG.
+      
+      We reassign the viewbox to have user coords (0.0, 0.0) in its center, and we initially translate the center of
+      the SVG content to be at viewbox (0.0, 0.0). We leave the scale of
+      (1 1) (initially) to encompass the whole drawing in the viewport.
+      
+      @param {String} newSVG The new SVG content.
+       */
+
+      ScalableSVG.prototype.newSVG = function(_newSVG) {
+        var str, svgEl, viewBox;
+        svgEl = $(_newSVG);
+        svgEl = svgEl.filter("svg");
+        if (svgEl.length !== 1) {
+          return this.pane.setStatus("fail");
+        } else {
+          this.contentValid = true;
+          this.pane.setStatus("success");
+          this.svgDOMEl = svgEl.get(0);
+          this.gDOMEl = Utils.$one(svgEl.children("g"));
+          Utils.assert(this.gDOMEl.length === 1);
+          viewBox = this.svgDOMEl.viewBox.baseVal;
+          this.userBounds = new PaneComponent.Rect();
+          this.setBounds(viewBox);
+          str = -(this.userBounds.width / 2.0) + " " + -(this.userBounds.height / 2.0) + " " + this.userBounds.width + " " + this.userBounds.height;
+          this.svgDOMEl.setAttribute("viewBox", str);
+          this.positionNewContent();
+          this.contentContainerEl.children().replaceWith(svgEl);
+          if (this.is_first) {
+            this.initContent();
+          }
+          return this.is_first = false;
+        }
+      };
+
+
+      /*
+      Converts number of pixels to user units
+      @param {Number} px the dimension (or distance) in pixels
+      @return {Number} the resulting number of user units
+       */
+
+      ScalableSVG.prototype.pixelsToUserUnits = function(px) {
+        var clientHeight, clientWidth, if_x_bound, if_y_bound, ref;
+        ref = this.contentContainerEl[0], clientWidth = ref.clientWidth, clientHeight = ref.clientHeight;
+        if_x_bound = this.userBounds.width / clientWidth;
+        if_y_bound = this.userBounds.height / clientHeight;
+        return px * Math.max(if_x_bound, if_y_bound) / this.contentScale;
+      };
+
+
+      /*
+      Reflect contentScale and userFocus x/y in the DOM.
+       */
+
+      ScalableSVG.prototype.refreshContentPosition = function() {
+        var str;
+        str = "scale(" + this.contentScale + ") rotate(0) translate(" + (-this.userFocus.x) + " " + (-this.userFocus.y) + ")";
+        return this.gDOMEl.attr("transform", str);
+      };
+
+
+      /*
+      (UNUSED)
+      Parses the transformation attribute on the <g> element inside the SVG.
+      @return [Object] `{scale, rotate, focus: {x, y}}`
+       */
+
+      ScalableSVG.prototype.parseGTransform = function() {
+        var all, focus, re, ref, rotate, scale, str;
+        focus = {};
+        str = this.gDOMEl.attr("transform");
+        re = /scale\(([0-9\.-]+)(?:\s[0-9\.-]+)?\)\srotate\(([0-9\.-]+)\)\stranslate\(([0-9\.-]+)\s([0-9\.-]+)\)/;
+        ref = str.match(re), all = ref[0], scale = ref[1], rotate = ref[2], focus.x = ref[3], focus.y = ref[4];
+        scale = parseInt(scale, 10);
+        rotate = parseInt(rotate, 10);
+        focus.x = -parseInt(focus.x, 10);
+        focus.y = -parseInt(focus.y, 10);
+        return {
+          scale: scale,
+          rotate: rotate,
+          focus: focus
+        };
+      };
+
+      return ScalableSVG;
+
+    })(Pane.ScalableContent);
+
+    /*
+    A mixin to extend Pane with features for representing the state of
+    simulation at a given cycle.
+    @mixin
+     */
+    Pane.Steppable = {
+      steppable: true,
+      cyc: null,
+      cycEl: null,
+      waveData: null,
+      steppableInit: function() {
+        return this.cyc = 0;
+      },
+      steppableInitDOM: function() {
+        var stepEl;
+        this.cycEl = $("<textarea title=\"Current Cycle\" id=\"" + this.path + "-cyc\" style=\"resize: none; height: 30px; width: 100px;\">\n  " + this.cyc + "</textarea>");
+        this.cycEl.on("keypress", (function(_this) {
+          return function(e) {
+            if (e.which === 13) {
+              _this.validateCyc();
+              return e.preventDefault();
+            }
+          };
+        })(this));
+        this.cycEl.on("focusout", (function(_this) {
+          return function() {
+            return _this.validateCyc();
+          };
+        })(this));
+        stepEl = $("<div role=\"group\" data-" + this.mnemonic + "-stepping=\"data-" + this.mnemonic + "-stepping\"\n     class=\"btn-group mc-pane-controls mc-stepping-controls\" id=\"" + this.path + "-step\">\n  <button data-" + this.mnemonic + "-step=\"back\" title=\"Step Back\" class=\"btn btn-secondary\">\n    <i class=\"fa fa-fw fa-chevron-left\"></i></button>\n  <button data-" + this.mnemonic + "-step=\"forward\" title=\"Step\" class=\"btn btn-secondary\">\n    <i class=\"fa fa-fw fa-chevron-right\"></i></button>\n  <button data-" + this.mnemonic + "-reset=\"data-viz-reset\" title=\"Jump to start\" class=\"btn btn-secondary\">\n    <i class=\"fa fa-fw fa-step-backward\"></i></button>\n  <span style=\"position: relative; top: -10px\">Cycle:</span>\n</div>");
+        Utils.$one("[data-viz-step='forward']", stepEl).click((function(_this) {
+          return function(e) {
+            e.preventDefault();
+            return _this.nextCycle();
+          };
+        })(this));
+        Utils.$one("[data-viz-step='back']", stepEl).click((function(_this) {
+          return function(e) {
+            e.preventDefault();
+            return _this.prevCycle();
+          };
+        })(this));
+        Utils.$one("[data-viz-reset]", stepEl).click((function(_this) {
+          return function(e) {
+            e.preventDefault();
+            return _this.setCycle(0);
+          };
+        })(this));
+        stepEl[0].appendChild(this.cycEl[0]);
+        return this.paneEl[0].children[0].appendChild(stepEl[0]);
+      },
+      getWaveData: function() {
+        return this.waveData;
+      },
+      setWaveData: function(waveData) {
+        this.waveData = waveData;
+        return this.setCycle(this.cyc);
+      },
+
+      /*
+      Go to the previous cycle.
+       */
+      prevCycle: function() {
+        return this.setCycle(this.cyc - 1);
+      },
+
+      /*
+      Go to the next cycle.
+       */
+      nextCycle: function() {
+        return this.setCycle(this.cyc + 1);
+      },
+
+      /*
+      Set the cycle to a new value, updating @cycEl and @render()ing as needed.
+      Value is kept within the post-reset range of valid cycles in the waveform, or the min/max values given.
+      @param {int} newCyc the new value for @cyc
+      @param {int} min the minimum legal cycle value
+      @param {int} max the maximum legal cycle value
+       */
+      setCycle: function(newCyc, min, max) {
+        if (min == null) {
+          min = 0;
+        }
+        if (max == null) {
+          max = this.getWaveData() ? this.getWaveData().getEndCycle() : min;
+        }
+        if (newCyc < min) {
+          newCyc = min;
+        }
+        if (newCyc > max) {
+          newCyc = max;
+        }
+        this.cycEl.val("" + newCyc);
+        if (this.cyc !== newCyc) {
+          this.updateCyc(newCyc);
+          return Utils.assert(this.cyc === newCyc);
+        }
+      },
+
+      /*
+      @cycEl value was changed. Validate it and update as necessary.
+       */
+      validateCyc: function() {
+        var cycStr, newCyc;
+        cycStr = this.cycEl.val();
+        newCyc = parseInt(cycStr, 10);
+        if (!isNaN(newCyc) && newCyc >= 0) {
+          return this.setCycle(newCyc);
+        } else {
+          return this.setCycle(this.cyc);
+        }
+      }
+    };
+    Pane.prototype = $.extend({}, BladeComponent, module.config(), Pane.prototype);
+    return Pane;
+  });
+
+}).call(this);

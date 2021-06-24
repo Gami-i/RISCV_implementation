@@ -1,0 +1,128 @@
+(function() {
+  var $, Logging, Promise, Utils, ref;
+
+  ref = [], Logging = ref[0], $ = ref[1], Promise = ref[2], Utils = ref[3];
+
+
+  /*
+  Generic utility functions.
+   */
+
+  Utils = {};
+
+
+  /*
+  Assert that a condition must be true.
+  @param {Boolean} cond the condition which should be true
+  @param {String, closure} message a message or method to return one to report on failure
+   */
+
+  Utils.assert = function(cond, message) {
+    var msg;
+    if (!cond) {
+      msg = !message ? "Failed assertion." : typeof message === "string" ? message : message();
+      if (!window.assertionFlag) {
+        alert(msg);
+        window.assertionFlag = true;
+      }
+      debugger;
+    }
+    return null;
+  };
+
+
+  /*
+  "Abstract" methods can call this.
+   */
+
+  Utils.abstractMethod = function() {
+    return Utils.unusedCode("Abstract method has no definition.");
+  };
+
+
+  /*
+  Call this for unusedCode.
+   */
+
+  Utils.unusedCode = function() {
+    return Utils.report("Reached code that was supposed to be unused.");
+  };
+
+
+  /*
+  Call this for unwrittenCode.
+   */
+
+  Utils.unwrittenCode = function() {
+    return Utils.report("Reached unwritten code.");
+  };
+
+
+  /*
+  Report time on console for performance debug (though, generally browser performance debug is better).
+  @param {String} tag an identifier to include in the printed string.
+   */
+
+  Utils.reportTime = function(tag) {
+    var delta, ms, str;
+    ms = new Date().getTime();
+    str = "Time: " + ms;
+    if (window.lastReportTime != null) {
+      delta = ms - window.lastReportTime;
+      str = "Elapsed: " + delta + ", " + str;
+    }
+    str = str + " | (" + tag + ")";
+    console.log(str);
+    return window.lastReportTime = ms;
+  };
+
+
+  /*
+  Report a message.
+   */
+
+  Utils.report = function(msg) {
+    console.log(msg);
+    return console.trace();
+  };
+
+
+  /*
+  @param {String} sel the selector expression
+  @param {Object} context a DOM Element, Document, or jQuery to use as context
+  @return {jQuery} the single-element {jQuery}
+   */
+
+  Utils.$one = function(sel, context) {
+    var els;
+    els = $(sel, context);
+    Utils.assert(els.length === 1, function() {
+      return "\"" + sel + "\" matched " + els.length + " elements.";
+    });
+    return els;
+  };
+
+
+  /*
+  @param {String} sel the selector expression
+  @param {Object} context a DOM Element, Document, or jQuery to use as context
+  @return [Node] the single [Node]
+   */
+
+  Utils.node = function(sel, context) {
+    var els;
+    els = $(sel, context);
+    Utils.assert(els.length === 1, function() {
+      return "\"" + sel + "\" matched " + els.length + " elements.";
+    });
+    return els[0];
+  };
+
+  define("Utils", function(require, exports, module) {
+    Logging = require("Logging");
+    Promise = require("bluebird");
+    $ = require("jquery");
+    return Utils;
+  });
+
+}).call(this);

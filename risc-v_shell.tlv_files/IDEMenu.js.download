@@ -1,0 +1,112 @@
+(function() {
+  var $, BladeComponent, IDEMenu, Promise, Utils, ref;
+
+  ref = [], BladeComponent = ref[0], $ = ref[1], Promise = ref[2], Utils = ref[3];
+
+
+  /*
+  A module for {IDE} that displays a full-width menu on top of an {FlexSplit}
+  
+  @extend BladeComponent
+  @extend ModuleConfigObject
+   */
+
+  IDEMenu = (function() {
+    function IDEMenu() {}
+
+    IDEMenu.prototype.init = function(path, opts) {
+      this.path = path;
+      return this.compileComponent("menu", opts, this.blade).then((function(_this) {
+        return function(html) {
+          $("#" + _this.path).html(html);
+          return _this;
+        };
+      })(this));
+    };
+
+
+    /*
+    Sets project and updates UI.
+    @param {Project} @_project The value to set as project
+    @return IDEMenu
+     */
+
+    IDEMenu.prototype.project = function(_project) {
+      this._project = _project;
+      if (!this._project.user || !this._project.path) {
+        this.save_status("no project");
+      } else {
+        this._project.canEdit().then((function(_this) {
+          return function(canEdit) {
+            if (canEdit) {
+              return _this.save_status("saved");
+            } else {
+              return _this.save_status("no auth");
+            }
+          };
+        })(this));
+      }
+      this._project.on("saving", (function(_this) {
+        return function() {
+          return _this.save_status("saving");
+        };
+      })(this));
+      this._project.on("saved", (function(_this) {
+        return function(date) {
+          _this.save_time(date);
+          return _this.save_status("saved");
+        };
+      })(this));
+      this._project.on("save error", (function(_this) {
+        return function() {
+          return _this.save_status("error");
+        };
+      })(this));
+      this._project.on("app error", (function(_this) {
+        return function() {
+          return _this.save_status("apperror");
+        };
+      })(this));
+      return this;
+    };
+
+
+    /*
+    Sets the time of the last save.
+    @param {Date} save_time The time of the last save
+    @return IDEMenu
+     */
+
+    IDEMenu.prototype.save_time = function(save_time) {
+      var el, savedEl;
+      savedEl = Utils.$one("[mc-menu-status-case=\"saved\"]");
+      el = Utils.$one(".timestamp", savedEl);
+      el.attr("data-livestamp", save_time / 1000);
+      el.text("a few seconds ago");
+      return this;
+    };
+
+
+    /*
+    Set project status and update the UI to reflect it.
+    @param {"no project", "saved", "no auth", "saving", "error"} status The status.
+     */
+
+    IDEMenu.prototype.save_status = function(status) {
+      return Utils.$one("[mc-menu-status]").attr("mc-menu-status", status);
+    };
+
+    return IDEMenu;
+
+  })();
+
+  define("IDEMenu", function(require, exports, module) {
+    BladeComponent = require("BladeComponent");
+    $ = require("jquery");
+    Promise = require("bluebird");
+    Utils = require("Utils");
+    $.extend(IDEMenu.prototype, BladeComponent, module.config());
+    return IDEMenu;
+  });
+
+}).call(this);

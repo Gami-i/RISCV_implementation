@@ -1,0 +1,857 @@
+(function() {
+  var hasProp = {}.hasOwnProperty,
+    extend = function(child, parent) { for (var key in parent) { if (hasProp.call(parent, key)) child[key] = parent[key]; } function ctor() { this.constructor = child; } ctor.prototype = parent.prototype; child.prototype = new ctor(); child.__super__ = parent.prototype; return child; },
+    bind = function(fn, me){ return function(){ return fn.apply(me, arguments); }; };
+
+  require.config({
+    packages: [
+      {
+        name: "@nx-js/compiler-util-hack",
+        location: "/module/VizPane/@nx-js/compiler-util",
+        main: "dist/cjs.es5.js"
+      }
+    ]
+  });
+
+  define("VizPane", function(require, exports, module) {
+    var $, Logging, ModelViewSync, Pane, Promise, SignalValue, Utils, VizBlock, VizContext, VizInstanceContext, VizPane, VizScopeContext, nxCompiler;
+    Logging = require("Logging");
+    ModelViewSync = require("ModelViewSync");
+    Pane = require("Pane");
+    SignalValue = require("VCD/SignalValue");
+    $ = require("jquery");
+    Logging = require("Logging");
+    Utils = require("Utils");
+    Promise = require("bluebird");
+    nxCompiler = require("@nx-js/compiler-util-hack");
+
+    /*
+    A module that vizualizes simulation from TLV \viz nodes.
+    -TO-BE-DELETED
+    -  For now, \viz API is documented here, as it solidifies.
+    -  Single quote (') is reserved to delimit TLV references. JS Strings should be specified
+    -  using double quotes ("). TLV references are parsed by SandPiper.
+    -  TODO: Currently no '' are required.
+    -  References are turned into SignalValue objects. \viz code should only use signal value
+    -  access methods for now as the API for this class is not solidified.
+    -  Eg:
+    -    var val = '/path[<js-index-expr>]|pipe$sig'.asInt()
+    -
+    -  TODO: Need mechanism for defining set of signals that will be managed by Makerchip.
+    -        Eg:
+    -          sigs: {'/path[<js-index-expr>]|pipe$sig',
+    -                 '...'}
+    -        The SignalValue for these will be created once and walked as the simulation is
+    -        stepped forward/backward or jumped to a new cycle.
+    -        Would need to support lazy adjustment of current cycle once viz is optimized to only
+    -        update visible parts.
+    (See User Guide: https://docs.google.com/document/d/1GycZj6urGJ4gw0mdkXh0x3vTnFwVDR--_7rA4PR2rzc/edit?usp=sharing.)
+    
+    @extend Pane
+    @extend ModuleConfigObject
+    @extend ModelViewSync
+     */
+    VizPane = (function() {
+      VizPane.prototype.model = null;
+
+      VizPane.prototype.lastCompileID = null;
+
+      VizPane.prototype.vcdCompileID = null;
+
+      VizPane.prototype.parseModelCompileID = null;
+
+      VizPane.prototype.vizGlobal = null;
+
+      VizPane.prototype.topInstance = null;
+
+      VizPane.prototype.renderedCyc = null;
+
+      VizPane.prototype.readyWaveData = null;
+
+      VizPane.prototype.defaultVizSrc = "initAll() {\n  let notice = new fabric.Text(\n    \"This model has no vizualization.\\nThis feature is currently in alpha form.\\nStay tuned for docs.\",\n    {fontSize: 10, top: -15, left: -80}\n  )\n  return {objects: {notice}}\n}";
+
+      function VizPane() {
+        this.model = null;
+        this.cyc = 0;
+      }
+
+      VizPane.prototype.init = function(name, ide, project, tabbedview) {
+        return this.initPane("VizPane", name, ide, project, tabbedview, {}, true).then((function(_this) {
+          return function() {
+            var el;
+            _this.enableTimestamp();
+            el = Utils.$one('<canvas id="canvas"' + ' data-Viz-canvas="data-Viz-canvas"></canvas>');
+            _this.contentContainerEl[0].appendChild(el[0]);
+            return _this;
+          };
+        })(this));
+      };
+
+      VizPane.prototype.resize = function() {
+        if (this.content !== null) {
+          return this.content.resize(this.contentContainerEl.width(), this.contentContainerEl.height());
+        }
+      };
+
+
+      /*
+      Process new parse model emitted by {CompileServer}.
+       */
+
+      VizPane.prototype.onViz = function(model1) {
+        var prevFocus, prevScale;
+        this.model = model1;
+        this.renderedCyc = null;
+        if (this.content !== null) {
+          prevScale = this.content.contentScale;
+          prevFocus = this.content.userFocus;
+          this.content.destroy();
+          this.content = null;
+          this.content = new VizPane.ScalableFabric(this, prevScale, prevFocus);
+        } else {
+          this.content = new VizPane.ScalableFabric(this);
+        }
+        this.vizGlobal = {
+          canvas: this.content.canvas,
+          Grid: VizPane.Grid
+        };
+        this.model = this.prepModel(this.model);
+        if (!this.model.hasViz) {
+          this.model.viz = new VizBlock(this, this.defaultVizSrc);
+        }
+        this.topInstance = new VizScopeContext(null, "top", this.model, this, []);
+        return this.resize();
+      };
+
+
+      /*
+      Register the compiler.
+      @param {SandPiperCompiler} compiler The value to set as compiler
+      @return Graph
+       */
+
+      VizPane.prototype.compiler = function(compiler) {
+        compiler.on("newcompile", (function(_this) {
+          return function(lastCompileID) {
+            _this.lastCompileID = lastCompileID;
+            _this.model = null;
+            return _this.setStatus("working");
+          };
+        })(this));
+        compiler.on("vcd", (function(_this) {
+          return function(waveData) {
+            return _this.readyWaveData = waveData;
+          };
+        })(this));
+        compiler.on("verilator/done", (function(_this) {
+          return function(data) {
+            if (data.success === "success") {
+              _this.vcdCompileID = _this.lastCompileID;
+              return _this.gotCompileResults();
+            } else {
+              return _this.setStatus(data.timeout ? "timeout" : "fail");
+            }
+          };
+        })(this));
+        compiler.on("parse model", (function(_this) {
+          return function(model) {
+            if (model !== null) {
+              return _this.onViz(model);
+            }
+          };
+        })(this));
+        return compiler.on("parse model/done", (function(_this) {
+          return function(data) {
+            if (data.success === "success") {
+              _this.parseModelCompileID = _this.lastCompileID;
+              return _this.gotCompileResults();
+            } else {
+              return _this.setStatus(data.timeout ? "timeout" : "fail");
+            }
+          };
+        })(this));
+      };
+
+      VizPane.prototype.gotCompileResults = function() {
+        if (this.vcdCompileID === this.parseModelCompileID) {
+          this.setStatus("success");
+          Utils.assert(this.readyWaveData !== null);
+          this.setWaveData(this.readyWaveData);
+          if (this.model !== null) {
+            this.render();
+          }
+        }
+        return this;
+      };
+
+      VizPane.prototype.initOpened = function() {};
+
+
+      /*
+      Iterate over parse model to parse "src" scripts into functions defined in place
+      (alongside "src") as "obj", and to execute init functions to build @instanceContext.
+      Add hasViz to indicate whether any children contain \viz blocks.
+      @param {Object} submodel the subtree of the parse model
+      TODO: Also filter hierarchy that contains no \viz.
+      TODO: The code coffeescript generates does not modify in place, it constructs a new
+            object. Not sure why, but that impacts performance, and means I need to return the new
+            object.
+       */
+
+      VizPane.prototype.prepModel = function(submodel) {
+        var key, value;
+        submodel.hasViz = false;
+        for (key in submodel) {
+          if (!hasProp.call(submodel, key)) continue;
+          value = submodel[key];
+          if (key === "viz") {
+            submodel.hasViz = true;
+            submodel[key] = new VizBlock(this, value.src);
+          } else if (key === "_range") {
+
+          } else if (typeof value === "object") {
+            submodel[key] = this.prepModel(submodel[key]);
+            if (submodel[key].hasViz) {
+              submodel.hasViz = true;
+            }
+          }
+        }
+        return submodel;
+      };
+
+
+      /*
+      Re-render the canvas at newCyc and update @cyc.
+      @param {int} newCyc The new valud for @cyc.
+       */
+
+      VizPane.prototype.updateCyc = function(newCyc) {
+        var ref, ref1, ref2, wasRendered;
+        wasRendered = this.renderedCyc !== null;
+        if (wasRendered) {
+          this.unrender();
+        }
+        this.cyc = newCyc;
+        if (wasRendered) {
+          this.render();
+        }
+        return (ref = this.project) != null ? (ref1 = ref.waveformPane) != null ? (ref2 = ref1.wg) != null ? ref2.setVizCursorCycle(newCyc) : void 0 : void 0 : void 0;
+      };
+
+
+      /*
+      Render an unrendered view.
+       */
+
+      VizPane.prototype.render = function() {
+        this.topInstance.render([], this);
+        this.renderedCyc = this.cyc;
+        return this.vizGlobal.canvas.renderAll();
+      };
+
+      VizPane.prototype.unrender = function() {
+        if ((this.renderedCyc !== null) && (this.topInstance !== null)) {
+          this.topInstance.render([], this, true);
+          return this.renderedCyc = null;
+        }
+      };
+
+      return VizPane;
+
+    })();
+    VizPane.Grid = (function() {
+      Grid.prototype.top = null;
+
+      Grid.prototype.canvasEl = null;
+
+      Grid.prototype.imageOptions = null;
+
+      Grid.prototype._imageEl = null;
+
+      Grid.prototype.fabricImage = null;
+
+      function Grid(top1, width, height, imageOptions) {
+        this.top = top1;
+        this.imageOptions = imageOptions;
+        this.canvasEl = document.createElement("canvas");
+        this.canvasEl.width = width;
+        this.canvasEl.height = height;
+      }
+
+      Grid.prototype.getFabricObject = function() {
+        if (this._imageEl === null) {
+          this._imageEl = document.createElement("img");
+          this._imageEl.style.cssText = "image-rendering: pixelated";
+        }
+        this._imageEl.src = this.canvasEl.toDataURL();
+        if (this.fabricImage === null) {
+          this.fabricImage = new fabric.Image(this._imageEl, this.imageOptions);
+        }
+        this._imageEl.onload = (function(_this) {
+          return function() {
+            _this.fabricImage.setCoords();
+            return _this.top.global.canvas.renderAll();
+          };
+        })(this);
+        return this.fabricImage;
+      };
+
+
+      /*
+      Converts the canvas to an HTMLImageElement (as PNG).
+       */
+
+      Grid.prototype.toImage = function() {
+        var image;
+        image = document.createElement("img");
+        image.src = canvas.toDataURL("image/gif");
+        return image;
+      };
+
+
+      /*
+      Set the color of a cell (pixel).
+      @param {int} x
+      @param {int} y
+       */
+
+      Grid.prototype.setCellColor = function(x, y, color) {
+        var ctx;
+        ctx = this.canvasEl.getContext("2d");
+        ctx.fillStyle = color;
+        return ctx.fillRect(x, y, 1, 1);
+      };
+
+      return Grid;
+
+    })();
+
+    /*
+    FabricJS-specific scalable context.
+     */
+    VizPane.ScalableFabric = (function(superClass) {
+      extend(ScalableFabric, superClass);
+
+      ScalableFabric.prototype.canvas = null;
+
+
+      /*
+      Constructor.
+      @param {Pane} pane the pane
+      @param {Number} scale (optional) the initial scale (presumably from previous content)
+      @param {Object} focus (specified along w/ scale) the initial focus point (presumably from
+                            previous content)
+       */
+
+      function ScalableFabric(pane, scale, focus) {
+        ScalableFabric.__super__.constructor.call(this, pane);
+        this.canvas = new fabric.Canvas('canvas', {
+          imageSmoothingEnabled: false
+        });
+        this.canvas.renderOnAddRemove = false;
+        this.contentValid = true;
+        this.userBounds = new Pane.Rect().set(-1000, -1000, 2000, 2000);
+        if (typeof scale !== "undefined") {
+          this.setContentScale(scale, false);
+          this.focusContentOn(focus.x, focus.y, false);
+          this.is_first = false;
+        }
+        this.positionNewContent();
+      }
+
+      ScalableFabric.prototype.destroy = function() {
+        return this.canvas.dispose();
+      };
+
+      ScalableFabric.prototype.resize = function(width, height) {
+        this.canvas.setWidth(width);
+        this.canvas.setHeight(height);
+        if (this.contentValid) {
+          return this.refreshContentPosition();
+        }
+      };
+
+
+      /*
+      Reflect the content position/scale in the DOM.
+       */
+
+      ScalableFabric.prototype.refreshContentPosition = function() {
+        var pan;
+        this.canvas.setZoom(this.contentScale);
+        pan = new fabric.Point(this.userFocus.x * this.canvas.getZoom() - this.canvas.getWidth() / 2.0, this.userFocus.y * this.canvas.getZoom() - this.canvas.getHeight() / 2.0);
+        this.canvas.absolutePan(pan);
+        return this.canvas.renderAll();
+      };
+
+
+      /*
+      Converts number of pixels to user units
+      @param {Number} px the dimension (or distance) in pixels
+      @return {Number} the resulting number of user units
+       */
+
+      ScalableFabric.prototype.pixelsToUserUnits = function(px) {
+        return px / this.contentScale;
+      };
+
+      return ScalableFabric;
+
+    })(Pane.ScalableContent);
+
+    /*
+    These two classes form an alternating hierarchy that defines the instantiated design
+    hierarchy of visual elements.
+     */
+
+    /*
+    An instance of a scope in the viz instance hierarchy.
+     */
+    VizInstanceContext = (function() {
+      VizInstanceContext.prototype.scope = null;
+
+      VizInstanceContext.prototype.index = null;
+
+      VizInstanceContext.prototype.children = null;
+
+      VizInstanceContext.prototype.renderedObjects = null;
+
+      VizInstanceContext.prototype.initObjects = null;
+
+      VizInstanceContext.prototype.initResults = void 0;
+
+      VizInstanceContext.prototype.renderResults = void 0;
+
+
+      /*
+      Constructor. Recursively processes user's initAll() and initEach() functions from submodel
+      and creates a fabric.Group for each instance. Recursion adds child Groups to Group.
+      initAll() functions are evaluated, and results replace the function in submodel.
+      initEach() results are placed in this class.
+      Each instance has a fabric.Group containing its children.
+      @param scope {VizScopeContext} Containing {VizScopeContext}.
+      @param index {int} Index of this instance.
+      @param submodel {Object} Submodel of @model.
+      @param pane {VizPane} The {VizPane}
+      @param scopes {Object} The {VizInstanceContext} for this and each parent scope, indexed by name
+                             (not yet updated with this instance).
+       */
+
+      function VizInstanceContext(scope, index, submodel, pane, scopes) {
+        var key, name, obj, objectsArray, ref, ref1, value;
+        this.scope = scope;
+        this.index = index;
+        scopes[this.scope.name] = this;
+        this.renderedObjects = [];
+        this.initObjects = {};
+        this.children = {};
+        if (submodel.viz != null) {
+          this.initResults = submodel.viz.invoke("initEach", pane.cyc, scopes, this);
+          if (((ref = this.initResults) != null ? ref.objects : void 0) != null) {
+            objectsArray = [];
+            ref1 = this.initResults.objects;
+            for (name in ref1) {
+              obj = ref1[name];
+              this.initObjects[name] = obj;
+              objectsArray.push(obj);
+              pane.vizGlobal.canvas.add(obj);
+            }
+          }
+        }
+        for (key in submodel) {
+          if (!hasProp.call(submodel, key)) continue;
+          value = submodel[key];
+          if ((typeof value === "object") && key !== "viz") {
+            this.children[key] = new VizScopeContext(this, key, value, pane, scopes);
+          }
+        }
+        delete scopes[this.scope.name];
+      }
+
+
+      /*
+      Render (make updates to) or unrender the canvas to reflect or unreflect the current cycle.
+      Set @renderResults to the return value (unless unrendering)
+      @param {Object} scopes As in constructor.
+      @param {VizPane} pane The {VizPane}.
+      @param {Boolean} un unrender if truthy.
+       */
+
+      VizInstanceContext.prototype.render = function(scopes, pane, un) {
+        var child, fnName, name, ref, ref1, ref2, ref3, rslt;
+        Utils.assert(!un === (pane.renderedCyc === null));
+        scopes[this.scope.name] = this;
+        if (this.scope.modelScope.viz != null) {
+          fnName = un ? "unrenderEach" : "renderEach";
+          rslt = this.scope.modelScope.viz.invoke(fnName, pane.cyc, scopes, this);
+          if (un) {
+            (ref = pane.vizGlobal.canvas).remove.apply(ref, this.renderedObjects);
+            this.renderedObjects = [];
+          } else {
+            this.renderResults = rslt;
+            if (((ref1 = this.renderResults) != null ? ref1.objects : void 0) != null) {
+              this.renderedObjects = this.renderResults.objects;
+              (ref2 = pane.vizGlobal.canvas).add.apply(ref2, this.renderedObjects);
+            }
+          }
+        }
+        ref3 = this.children;
+        for (name in ref3) {
+          child = ref3[name];
+          child.render(scopes, pane, un);
+        }
+        return delete scopes[this.scope.name];
+      };
+
+      return VizInstanceContext;
+
+    })();
+
+    /*
+    A scope in the viz instance hierarchy.
+    TODO: There's a lot of commonality with VizInstanceContext, so there should be a superclass.
+     */
+    VizScopeContext = (function() {
+      VizScopeContext.prototype.parentInstance = null;
+
+      VizScopeContext.prototype.name = null;
+
+      VizScopeContext.prototype.modelScope = null;
+
+      VizScopeContext.prototype.instances = null;
+
+      VizScopeContext.prototype.renderedObjects = null;
+
+      VizScopeContext.prototype.initObjects = null;
+
+      VizScopeContext.prototype.initResults = void 0;
+
+      VizScopeContext.prototype.renderResults = void 0;
+
+
+      /*
+      Invoke \viz initAll() for this scope, then recurse into children.
+      @param {VizInstanceContext} parentInstance
+      @param {String} name The name of this scope, from @model.
+      @param {Object} modelScope the corresponding parse model.
+      @param {VizPane} pane The {VizPane}.
+      @param {Object} scopes The {VizInstanceContext} for this and each parent scope, indexed by name.
+       */
+
+      function VizScopeContext(parentInstance, name1, modelScope, pane, scopes) {
+        var i, j, name, obj, ref, ref1, ref2, ref3;
+        this.parentInstance = parentInstance;
+        this.name = name1;
+        this.modelScope = modelScope;
+        this.instances = {};
+        this.renderedObjects = [];
+        this.initObjects = {};
+        if (this.modelScope.viz != null) {
+          this.initResults = this.modelScope.viz.invoke("initAll", pane.cyc, scopes, this);
+          if (((ref = this.initResults) != null ? ref.objects : void 0) != null) {
+            ref1 = this.initResults.objects;
+            for (name in ref1) {
+              obj = ref1[name];
+              this.initObjects[name] = obj;
+              pane.vizGlobal.canvas.add(obj);
+            }
+          }
+        }
+        if (this.modelScope._range != null) {
+          for (i = j = ref2 = this.modelScope._range.min_index, ref3 = this.modelScope._range.max_index; ref2 <= ref3 ? j <= ref3 : j >= ref3; i = ref2 <= ref3 ? ++j : --j) {
+            this.instances[i] = new VizInstanceContext(this, i, this.modelScope, pane, scopes);
+          }
+        } else {
+          this.instances[""] = new VizInstanceContext(this, null, this.modelScope, pane, scopes);
+        }
+      }
+
+
+      /*
+      Invoke \viz [un]renderAll() for this scope, then recurse into children.
+      @param {Object} scopes As in constructor.
+      @param {VizPane} pane The {VizPane}.
+      @param {Boolean} un Unrender if truthy.
+       */
+
+      VizScopeContext.prototype.render = function(scopes, pane, un) {
+        var fnName, i, inst, ref, ref1, ref2, ref3, results, rslt;
+        Utils.assert(!un === (pane.renderedCyc === null));
+        if (this.modelScope.viz != null) {
+          fnName = un ? "unrenderAll" : "renderAll";
+          rslt = this.modelScope.viz.invoke(fnName, pane.cyc, scopes, this);
+          if (un) {
+            (ref = pane.vizGlobal.canvas).remove.apply(ref, this.renderedObjects);
+          } else {
+            this.renderResults = rslt;
+            if (((ref1 = this.renderResults) != null ? ref1.objects : void 0) != null) {
+              this.renderedObjects = this.renderResults.objects;
+              (ref2 = pane.vizGlobal.canvas).add.apply(ref2, this.renderedObjects);
+            }
+          }
+        }
+        ref3 = this.instances;
+        results = [];
+        for (i in ref3) {
+          inst = ref3[i];
+          results.push(inst.render(scopes, pane, un));
+        }
+        return results;
+      };
+
+      return VizScopeContext;
+
+    })();
+
+    /*
+    Encapsulated context for viz function invocation. A new one of these is created for each invocation.
+     */
+    VizContext = (function() {
+      VizContext.prototype.methodName = null;
+
+      VizContext.prototype.cyc = null;
+
+      VizContext.prototype.global = null;
+
+      VizContext.prototype.context = null;
+
+      VizContext.prototype.definition = null;
+
+      VizContext.prototype.scopes = null;
+
+      function VizContext(methodName, cyc1, scopes1, context1, definition, global1) {
+        this.methodName = methodName;
+        this.cyc = cyc1;
+        this.scopes = scopes1;
+        this.context = context1;
+        this.definition = definition;
+        this.global = global1;
+        this.svSigRef = bind(this.svSigRef, this);
+        this.sigRef = bind(this.sigRef, this);
+        if (this.methodName.startsWith("render")) {
+          this.initObjects = null;
+        } else {
+          this.render = null;
+        }
+      }
+
+      VizContext.prototype.getCycle = function() {
+        return this.cyc;
+      };
+
+      VizContext.prototype.getGlobal = function() {
+        return this.global;
+      };
+
+      VizContext.prototype.getContext = function() {
+        return this.context;
+      };
+
+      VizContext.prototype.getDefinition = function() {
+        return this.definition;
+      };
+
+      VizContext.prototype.getScope = function(name) {
+        return this.scopes[name];
+      };
+
+      VizContext.prototype.getIndex = function(name) {
+        if (name) {
+          return this.scopes[name].index;
+        } else {
+          return this.context.index;
+        }
+      };
+
+      VizContext.prototype.getCanvas = function() {
+        return this.global.canvas;
+      };
+
+      VizContext.prototype.fromInit = function() {
+        return this.context.initResults;
+      };
+
+      VizContext.prototype.fromRender = function() {
+        return this.context.renderedResults;
+      };
+
+      VizContext.prototype.getInitObject = function(name) {
+        return this.context.initObjects[name];
+      };
+
+      VizContext.prototype.getInitObjects = function() {
+        return this.context.initObjects;
+      };
+
+
+      /*
+      Register objects to be rendered on the canvas. Available only from a render method. These objects will be
+      removed from the canvas prior to invoking corresponding unrender method.
+      @param {Array<fabric.Object>} Array of fabricJS objects.
+       */
+
+
+      /*
+      Add objects to the canvas (from init* methods), and make them available via getObject(..).
+      @param {Object<fabric.Objects>} Object containing fabricJS objects.
+       */
+
+
+      /*
+      Return the pipesignal {SignalValue}, specified by name and the time (in phases) of
+      the phase-zero version of the signal. SandPiper turns \viz-context references into
+      calls to this method.
+      @param {String} sig the full pipesignal name.
+      @param {Number} phaseOfPipestageZero the phase of the trace of the phase-zero
+                      version of the pipesignal.
+      @return {SignalValue, null} a {SignalValue} representing the signal at the requested time;
+                                  null if signal not found.
+       */
+
+      VizContext.prototype.sigRef = function(sig, phaseOfPipestageZero) {
+        var sigName;
+        sigName = "TLV" + sig;
+        sig = this.definition.pane.waveData.getSignalByName(sigName);
+        if (!sig) {
+          return null;
+        }
+        return new SignalValue(sig, this.cyc - phaseOfPipestageZero / 2 + sig.cycle);
+      };
+
+
+      /*
+      Return the SV signal {SignalValue}, specified by name and (phase-granular) cycle offset.
+      TODO: Currently, SandPiper does not interpret '*sv_sig_name' references to call this.
+      @param {String} the full name of the SV signal.
+      @param {Number} cycOffset the offset from the current cycle at which to access the signal value.
+      @return {SignalValue, null} a {SignalValue} representing the signal at the requested time;
+                                  null if signal not found.
+       */
+
+      VizContext.prototype.svSigRef = function(sig, cycOffset) {
+        var sigName;
+        if (cycOffset == null) {
+          cycOffset = 0;
+        }
+        sigName = "SV." + sig;
+        sig = this.definition.pane.waveData.getSignalByName(sigName);
+        if (!sig) {
+          return null;
+        }
+        return new SignalValue(sig, this.cyc + cycOffset);
+      };
+
+      return VizContext;
+
+    })();
+
+    /*
+    A \viz section of TL-Verilog code.
+     */
+    VizBlock = (function() {
+      VizBlock.prototype.pane = null;
+
+      VizBlock.prototype.src = null;
+
+      VizBlock.prototype.invoke = null;
+
+
+      /*
+      @param {String} pane The {VizPane}.
+      @param {String} src The body of the \viz block from VizPane.model.
+       */
+
+      function VizBlock(pane1, src) {
+        this.pane = pane1;
+        this.src = src;
+        this.invoke = function() {
+          return void 0;
+        };
+        this.exec = nxCompiler.compileCode("return {" + this.src + "}");
+        this.invoke = (function(_this) {
+          return function(fn, cyc, scopes, instance) {
+            var context, e, global, top, viz;
+            context = new VizContext(fn, cyc, scopes, instance, _this, _this.pane.vizGlobal);
+            global = _this.pane.vizGlobal;
+            top = Object.assign(VizBlock.staticSandboxEnv, {
+              fn: fn,
+              cyc: cyc,
+              scopes: scopes,
+              instance: instance,
+              "this": _this,
+              VizContext: VizContext,
+              fabric: fabric,
+              sigRef: _this.sigRef,
+              global: global,
+              context: context
+            });
+            top.top = top;
+            viz = _this.exec(top);
+            if (typeof viz[fn] === "function") {
+              try {
+                return (viz[fn].bind(context))();
+              } catch (error) {
+                e = error;
+                console.log("Error executing the function: " + fn + "()\n   from \\viz script:\n--------------\n" + _this.src + "\n--------------\n   Error: " + e.message);
+                debugger;
+                try {
+                  (viz[fn].bind(context))();
+                } catch (error) {
+                  e = error;
+                  null;
+                }
+                return null;
+              }
+            }
+          };
+        })(this);
+      }
+
+
+      /*
+      Static helper for sandboxEnv that builds the sandbox env from a list of properties to extract from window.
+      @param {<String>Array} props
+      return {Object} the constructed environment
+       */
+
+      VizBlock.windowEnv = function(props, window_fns) {
+        var env, j, k, len, len1, prop;
+        env = {};
+        for (j = 0, len = props.length; j < len; j++) {
+          prop = props[j];
+          if (window[prop] != null) {
+            env[prop] = window[prop];
+          } else {
+            console.log("Warning: global " + prop + " does not exist for inclusion in VIZ sandbox environment.");
+          }
+        }
+        for (k = 0, len1 = window_fns.length; k < len1; k++) {
+          prop = window_fns[k];
+          if (window[prop] != null) {
+            env[prop] = window[prop].bind(window);
+          } else {
+            console.log("Warning: global " + prop + " does not exist for inclusion in VIZ sandbox environment.");
+          }
+        }
+        return env;
+      };
+
+
+      /*
+      The static components of the environment for JS sandboxes in which VIZ code runs.
+       */
+
+      VizBlock.staticSandboxEnvFn = function() {
+        return this.windowEnv(["Infinity", "NaN", "eval", "isFinite", "isNaN", "parseFloat", "parseInt", "Object", "Function", "Boolean", "Symbol", "Error", "EvalError", "RangeError", "ReferenceError", "SyntaxError", "TypeError", "URIError", "Number", "BigInt", "Math", "Date", "String", "RegExp", "Array", "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array", "Map", "Set", "WeakMap", "WeakSet", "ArrayBuffer", "Atomics", "DataView", "JSON", "Promise", "Reflect", "Proxy", "Intl", "console", "alert", "atob", "confirm", "prompt"], ["setInterval", "setTimeout", "clearInterval", "clearTimeout"]);
+      };
+
+      VizBlock.staticSandboxEnv = VizBlock.staticSandboxEnvFn();
+
+      return VizBlock;
+
+    })();
+    VizPane.prototype = $.extend({}, Pane.prototype, ModelViewSync, module.config(), Pane.Scalable, Pane.Steppable, VizPane.prototype);
+    return VizPane;
+  });
+
+}).call(this);
